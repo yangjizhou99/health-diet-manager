@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""
+summary_report.py - 周报/月报生成器
+功能: generate (weekly/monthly), demo
+"""
+import argparse, json, sys
+from datetime import datetime, date, timedelta
+from pathlib import Path
+
+def load_json(fp, default=None):
+    if default is None: default = {}
+    if fp.exists():
+        try:
+            with open(fp,'r',encoding='utf-8') as f: return json.load(f)
+        except: return default
+    return default
+
+def get_date_range(end_date_str, report_type):
+    end = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else date.today()
+    if report_type == "weekly":
+        start = end - timedelta(days=6)
+    else:
+        start = end.replace(day=1)
+    return start, end
+
+def make_bar(val, maxval, width=20):
+    if maxval <= 0: return "░"*width
+    filled = min(width, round(val/maxval*width))
+    return "■"*filled + "░"*(width-filled)
+
+def generate_report(data_dir, report_type, end_date_str):
+    dd = Path(data_dir)
+    log = load_json(dd/"daily_log.json", {"records":[]})
+    prof = load_json(dd/"user_profile.json")
+    tgt = prof.get("daily_targets", {})
+    start, end = get_date_range(end_date_str, report_type)
+
+    # 按日期分组
+    daily = {}
+    cur = start
+    while cur <= end:
+        ds = cur.isoformat()
+        daily[ds] = {"calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sodium":0,"meals":0,"foods":[]}
+        cur += timedelta(days=1)
+
+    for r in log["records"]:
+        d = r["date"]
+        if d in daily:
+            for k in ["calories","protein","carbs","fat","fiber","sodium"]:
+                daily[d][k] += r["totals"].get(k, 0)
+            daily[d]["meals"] += 1
+            daily[d]["foods"].extend([f["name"] for f in r["foods"]])
+
+    # 统计
+    days_with_data = [d for d,v in daily.items() if v["meals"]>0]
+    n = len(days_with_data)
+    period = "周" if report_type=="weekly" else "月"
+    title = f"{start} ~ {end}"
+
+    lines = []
+    lines.append(f"# 📊 {period}报 ({title})")
+    lines.append(f"\n记录天数: {n}/{len(daily)} 天\n")
+
+    # 每日热量趋势
+    lines.append("## 每日热量摄入趋势\n")
+    lines.append("```")
+    cal_tgt = tgt.get("calories", 2000)
+    max_cal = max(max((daily[d]["calories"] for d in daily), default=0), cal_tgt) * 1.1
+    for d in sorted(daily.keys()):
+        v = daily[d]
+        day_label = datetime.strptime(d,"%Y-%m-%d").strftime("%m/%d")
+        bar = make_bar(v["calories"], max_cal, 30)
+        flag = " ✅" if 0.8*cal_tgt <= v["calories"] <= 1.2*cal_tgt else (" ⚠️" if v["calories"]>0 else " --")
+        lines.append(f"  {day_label} {bar} {round(v['calories']):>5} kcal{flag}")
+    lines.append(f"  {'目标':>5} {'·'*30} {cal_tgt:>5} kcal")
+    lines.append("```\n")
+
+    # 平均摄入
+    if n > 0:
+        avgs = {k: round(sum(daily[d][k] for d in days_with_data)/n, 1)
+                for k in ["calories","protein","carbs","fat","fiber"]}
+        lines.append("## 平均每日摄入 vs 推荐值\n")
+        lines.append("| 营养素 | 日均摄入 | 推荐值 | 达标率 | 状态 |")
+        lines.append("|--------|---------|--------|--------|------|")
+        names = {"calories":"热量(kcal)","protein":"蛋白质(g)","carbs":"碳水(g)","fat":"脂肪(g)","fiber":"纤维(g)"}
+        for k in ["calories","protein","carbs","fat","fiber"]:
+            t = tgt.get(k, 0)
+            a = avgs[k]
+            pct = round(a/t*100) if t>0 else 0
+            st = "✅" if 80<=pct<=120 else ("⚠️低" if pct<80 else "⚠️高")
+            lines.append(f"| {names[k]} | {a} | {t} | {pct}% | {st} |")
+        lines.append("")
+
+    # 饮食习惯分析
+    all_foods = []
+    for d in days_with_data:
+        all_foods.extend(daily[d]["foods"])
+    if all_foods:
+        from collections import Counter
+        top = Counter(all_foods).most_common(10)
+        lines.append("## 饮食习惯分析\n")
+        lines.append("**最常吃的食物 Top 10:**\n")
+        for i,(name,cnt) in enumerate(top,1):
+            lines.append(f"{i}. {name} ({cnt}次)")
+        lines.append("")
+
+    # 评分
+    if n > 0:
+        scores = []
+        for d in days_with_data:
+            sc = 100
+            for k in ["calories","protein","carbs","fat","fiber"]:
+                t = tgt.get(k, 0)
+                if t > 0:
+                    dev = abs(daily[d][k]/t*100 - 100)
+                    if dev > 30: sc -= 15
+                    elif dev > 20: sc -= 10
+                    elif dev > 10: sc -= 5
+            scores.append(max(0, sc))
+        avg_score = round(sum(scores)/len(scores))
+        best_day = days_with_data[scores.index(max(scores))]
+        worst_day = days_with_data[scores.index(min(scores))]
+        lines.append(f"## 综合评分\n")
+        lines.append(f"- **{period}均分**: {avg_score}/100")
+        lines.append(f"- **最佳日**: {best_day} ({max(scores)}分)")
+        lines.append(f"- **待改善日**: {worst_day} ({min(scores)}分)")
+        lines.append("")
+
+    # 体重变化（月报）
+    if report_type == "monthly" and "weight_history" in prof:
+        wh = [w for w in prof["weight_history"]
+              if start.isoformat() <= w["date"] <= end.isoformat()]
+        if wh:
+            lines.append("## 体重变化\n")
+            for w in wh:
+                lines.append(f"- {w['date']}: {w['weight']}kg")
+            if len(wh) >= 2:
+                d = round(wh[-1]["weight"]-wh[0]["weight"], 1)
+                lines.append(f"\n本月变化: **{'+' if d>0 else ''}{d}kg**")
+            lines.append("")
+
+    report = "\n".join(lines)
+    print(json.dumps({"status":"success","report_type":report_type,
+        "period":title,"days_tracked":n,"report_markdown":report},ensure_ascii=False,indent=2))
+
+def cmd_demo(_):
+    print("📊 报告生成器 Demo")
+    print("正常使用: python summary_report.py generate --type weekly --data-dir <path>")
+    print("生成周报: python summary_report.py generate --type weekly --end-date 2026-03-03 --data-dir <path>")
+    print("生成月报: python summary_report.py generate --type monthly --end-date 2026-03-31 --data-dir <path>")
+    print("✅ 脚本可用！")
+
+def main():
+    pa = argparse.ArgumentParser(description="周报月报生成器")
+    sp = pa.add_subparsers(dest="command")
+    p1 = sp.add_parser("generate")
+    p1.add_argument("--type", required=True, choices=["weekly","monthly"])
+    p1.add_argument("--end-date", default=None)
+    p1.add_argument("--data-dir", required=True)
+    sp.add_parser("demo")
+    args = pa.parse_args()
+    if args.command == "generate":
+        generate_report(args.data_dir, args.type, args.end_date)
+    elif args.command == "demo":
+        cmd_demo(args)
+    else:
+        pa.print_help()
+
+if __name__ == "__main__": main()
