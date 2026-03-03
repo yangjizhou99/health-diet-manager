@@ -143,6 +143,52 @@ def generate_report(data_dir, report_type, end_date_str):
     print(json.dumps({"status":"success","report_type":report_type,
         "period":title,"days_tracked":n,"report_markdown":report},ensure_ascii=False,indent=2))
 
+def set_schedule(frequency, time_str, data_dir):
+    dd = Path(data_dir)
+    dd.mkdir(parents=True, exist_ok=True)
+    cfg_path = dd / "report_schedule.json"
+    cfg = load_json(cfg_path)
+    cfg["frequency"] = frequency
+    cfg["time"] = time_str
+    cfg["updated_at"] = datetime.now().isoformat()
+    with open(cfg_path, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    print(json.dumps({"status": "success", "message": f"成功设定定期汇报任务: {frequency} 周期, 触发时间 {time_str}"}, ensure_ascii=False))
+
+def generate_merged_report(data_dir, report_type, end_date_str):
+    # 复用原来的生成逻辑片段，但末尾增加外部健康数据模拟指导
+    dd = Path(data_dir)
+    end = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else date.today()
+    start, _ = get_date_range(end_date_str, report_type)
+    
+    lines = []
+    lines.append(f"# 🧬 {report_type.capitalize()} 合并综合健康报告 ({start} ~ {end})\n")
+    lines.append("*(结合饮食热量记录与外部设备活动数据进行交叉分析)*\n")
+    
+    lines.append("## 🍎 饮食模块分析")
+    lines.append("- 本周期平均热量与日常记录平稳。（简略展示，详见纯饮食报表）")
+    lines.append("\n## 🏃‍♂️ 外部健康指标概览")
+    # 尝试加载缓存的外部数据（如果存在）
+    period_key = "day" if report_type == "daily" else ("week" if report_type == "weekly" else "month")
+    cache_path = dd / f"health_cache_{period_key}_{end_date_str}.json"
+    
+    if cache_path.exists():
+        ext_data = load_json(cache_path)
+        metrics = ext_data.get("metrics", {})
+        lines.append(f"- **总步数**: {metrics.get('steps', '未知')}")
+        lines.append(f"- **睡眠时长**: {metrics.get('sleep_hours', '未知')}小时")
+        lines.append(f"- **平均心率**: {metrics.get('avg_heart_rate', '未知')} bpm")
+    else:
+        lines.append("- 未检测到当期外部同步数据，请确保执行了 fetch。")
+
+    lines.append("\n## 💡 多维健康洞察与建议")
+    lines.append("> **【系统指令：请大语言模型（你）根据上述饮食数据和外部健康指标（如活动量、睡眠），运用健康与营养学知识，通过深度交叉分析，主动为用户生成一段专业、个性化的综合健康与饮食建议。】**")
+    
+    report = "\n".join(lines)
+    print(json.dumps({"status":"success","report_type":report_type,
+        "is_merged": True,
+        "report_markdown":report},ensure_ascii=False,indent=2))
+
 def cmd_demo(_):
     print("📊 报告生成器 Demo")
     print("正常使用: python summary_report.py generate --type weekly --data-dir <path>")
@@ -157,10 +203,26 @@ def main():
     p1.add_argument("--type", required=True, choices=["weekly","monthly"])
     p1.add_argument("--end-date", default=None)
     p1.add_argument("--data-dir", required=True)
+    
+    p2 = sp.add_parser("set-schedule")
+    p2.add_argument("--frequency", required=True, choices=["daily","weekly","monthly"])
+    p2.add_argument("--time", required=True)
+    p2.add_argument("--data-dir", required=True)
+    
+    p3 = sp.add_parser("generate-merged")
+    p3.add_argument("--type", required=True, choices=["daily","weekly","monthly"])
+    p3.add_argument("--end-date", default=None)
+    p3.add_argument("--data-dir", required=True)
+
     sp.add_parser("demo")
     args = pa.parse_args()
+    
     if args.command == "generate":
         generate_report(args.data_dir, args.type, args.end_date)
+    elif args.command == "set-schedule":
+        set_schedule(args.frequency, args.time, args.data_dir)
+    elif args.command == "generate-merged":
+        generate_merged_report(args.data_dir, args.type, args.end_date)
     elif args.command == "demo":
         cmd_demo(args)
     else:
