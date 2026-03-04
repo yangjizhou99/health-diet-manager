@@ -4,6 +4,8 @@ health_data_sync.py - 外部健康数据同步与切片抓取 (V2)
 功能: set-location, fetch
 """
 import argparse, json
+import os
+import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -38,23 +40,43 @@ def fetch_data(period, target_date, data_dir):
         print(json.dumps({"status": "error", "message": "未配置外部数据位置，请先执行 set-location"}, ensure_ascii=False))
         return
 
-    # 这是一个模拟抓取逻辑，假设从自定义脚本中提取到了数据并缓存
-    mock_data = {
-        "status": "success",
-        "period": period,
-        "target_date": target_date,
-        "metrics": {
-            "steps": 8500 if period == "day" else 55000,
-            "sleep_hours": 6.5 if period == "day" else 48.5,
-            "avg_heart_rate": 72
-        },
-        "message": f"成功从 {cfg['health_data_location']} 的固化提取脚本中抓取 {period} 数据"
-    }
+    loc = cfg["health_data_location"]
+    
+    # 尝试找到提取目录
+    extracted_dir = os.path.join(loc, "健康信息例子", "extracted") if "健康信息例子" in loc else os.path.join(loc, "extracted")
+    if not os.path.exists(extracted_dir):
+        extracted_dir = loc
+        
+    try:
+        # 动态导入引擎
+        scripts_dir = os.path.dirname(os.path.abspath(__file__))
+        if scripts_dir not in sys.path:
+            sys.path.append(scripts_dir)
+            
+        from health_metrics_engine import generate_health_report
+        comprehensive_report = generate_health_report(extracted_dir)
+        
+        output_data = {
+            "status": "success",
+            "period": period,
+            "target_date": target_date,
+            "metrics": comprehensive_report.get("metrics", {}),
+            "message": f"成功从 {loc} 引擎抓取并计算了全维健康数据"
+        }
+        
+    except Exception as e:
+        output_data = {
+            "status": "error",
+            "period": period,
+            "target_date": target_date,
+            "metrics": {},
+            "message": f"健康数据引擎运行失败: {str(e)}"
+        }
 
     cache_path = dd / f"health_cache_{period}_{target_date}.json"
-    save_json(cache_path, mock_data)
+    save_json(cache_path, output_data)
     
-    print(json.dumps(mock_data, ensure_ascii=False, indent=2))
+    print(json.dumps(output_data, ensure_ascii=False, indent=2))
 
 def main():
     pa = argparse.ArgumentParser(description="外部健康数据同步工具 (V2)")

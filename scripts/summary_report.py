@@ -4,6 +4,13 @@ summary_report.py - 周报/月报生成器
 功能: generate (weekly/monthly), demo
 """
 import argparse, json, sys
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except:
+        pass
+
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -175,11 +182,47 @@ def generate_merged_report(data_dir, report_type, end_date_str):
     if cache_path.exists():
         ext_data = load_json(cache_path)
         metrics = ext_data.get("metrics", {})
-        lines.append(f"- **总步数**: {metrics.get('steps', '未知')}")
-        lines.append(f"- **睡眠时长**: {metrics.get('sleep_hours', '未知')}小时")
-        lines.append(f"- **平均心率**: {metrics.get('avg_heart_rate', '未知')} bpm")
+        
+        target_date_str = ext_data.get("target_date", end_date_str)
+        
+        # 1. 提取日常活动
+        activity = metrics.get("daily_activity", {}).get(target_date_str, {})
+        lines.append(f"- **总步数**: {activity.get('total_steps', '无记录')}")
+        lines.append(f"- **连续久坐波段**: {activity.get('sedentary_3h_blocks_count', 0)} 波")
+        
+        # 2. 提取体成分
+        body = metrics.get("body_composition", {}).get(target_date_str, {})
+        if body:
+            lines.append(f"- **体重**: {body.get('weight_kg', '未知')}kg, **体脂**: {body.get('body_fat_pct', '未知')}%, **骨骼肌/脂肪比(SMI)**: {body.get('smi_ratio', '未知')}")
+        
+        # 3. 提取心率与隐性运动
+        hr_info = metrics.get("cardiovascular_health", {})
+        lines.append(f"- **全天静息心率基线**: {hr_info.get('baseline', {}).get('estimated_rhr', '未知')} bpm")
+        workouts = hr_info.get("inferred_workouts", [])
+        if period_key == "day":
+             day_workouts = [w for w in workouts if target_date_str in w.get("start","")]
+             if day_workouts:
+                 lines.append(f"- **隐性运动探针**: 发现 {len(day_workouts)} 个有氧波段, 总计 {sum(w['duration_minutes'] for w in day_workouts)} 分钟")
+             else:
+                 lines.append("- **隐性运动探针**: 今日无明显中高强度心率波段记录")
+        else:
+             lines.append(f"- **全周期累计Zone2+有效运动**: {hr_info.get('total_exercise_minutes_zone2_plus', 0)} 分钟")
+                 
+        # 4. 提取睡眠架构
+        sleep = metrics.get("sleep_recovery", {}).get(target_date_str, {})
+        if sleep:
+            lines.append(f"- **净睡眠**: {sleep.get('total_sleep_hours', 0)}小时 (深睡比例 {float(sleep.get('deep_sleep_ratio', 0)) * 100:.1f}%)")
+            lines.append(f"- **微觉醒打断**: {sleep.get('awake_interruptions_mins', 0)} 分钟")
+            
+        # 5. 提取精密能耗
+        energy = metrics.get("energy_expenditure", {}).get(target_date_str, {})
+        if energy:
+            lines.append(f"- **基础代谢消耗**: {energy.get('resting_burn_kcal', 0)} kcal")
+            lines.append(f"- **动态活动消耗**: {energy.get('active_burn_kcal', 0)} kcal (数据源: {energy.get('active_burn_source', '未知')})")
+            lines.append(f"- **全天总能量消耗(TDEE)**: {energy.get('tdee_kcal', 0)} kcal")
+            
     else:
-        lines.append("- 未检测到当期外部同步数据，请确保执行了 fetch。")
+        lines.append("- 未检测到当期外部同步数据，请确保执行了 fetch 以连接健康系统。")
 
     lines.append("\n## 💡 多维健康洞察与建议")
     lines.append("> **【系统指令：请大语言模型（你）根据上述饮食数据和外部健康指标（如活动量、睡眠），运用健康与营养学知识，通过深度交叉分析，主动为用户生成一段专业、个性化的综合健康与饮食建议。】**")
