@@ -3,7 +3,7 @@
 summary_report.py - 周报/月报生成器
 功能: generate (weekly/monthly), demo
 """
-import argparse, json, sys
+import argparse, hashlib, json, sys
 
 if sys.platform == "win32":
     try:
@@ -38,6 +38,24 @@ def _find_estimated_energy_days(metrics):
         if "estimated" in source or "fallback" in method:
             days.append(day)
     return days
+
+
+def _metrics_fingerprint(metrics):
+    payload = json.dumps(metrics or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _resolve_active_cache_path(dd, period_key, end_date_str):
+    canonical = dd / f"health_cache_{period_key}_{end_date_str}.json"
+    pointer = dd / f"health_cache_{period_key}_{end_date_str}.latest.json"
+    if pointer.exists():
+        pointer_data = load_json(pointer, {})
+        active_file = pointer_data.get("active_cache_file")
+        if active_file:
+            candidate = dd / active_file
+            if candidate.exists():
+                return candidate
+    return canonical
 
 def save_json(fp, data):
     tmp = fp.with_suffix('.tmp')
@@ -406,7 +424,7 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
     lines.append("\n## 🏃‍♂️ 外部健康指标概览")
     # 尝试加载缓存的外部数据，缓存不存在则自动触发 fetch
     period_key = "day" if report_type == "daily" else ("week" if report_type == "weekly" else "month")
-    cache_path = dd / f"health_cache_{period_key}_{end_date_str}.json"
+    cache_path = _resolve_active_cache_path(dd, period_key, end_date_str)
     
     if not cache_path.exists():
         print(f"[Report] 缓存 {cache_path.name} 不存在，尝试自动同步...", file=__import__('sys').stderr)
@@ -551,6 +569,12 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
         metrics=metrics if cache_path.exists() else {},
     )
 
+    cache_fingerprint = None
+    if cache_path.exists():
+        cache_fingerprint = ext_data.get("cache_meta", {}).get("cache_fingerprint")
+        if not cache_fingerprint:
+            cache_fingerprint = _metrics_fingerprint(metrics)
+
     lines.append("\n## 🤖 建议生成输入（客观数据）")
     lines.append("以下为原始客观指标，由大模型基于这些数据生成个性化建议。")
     lines.append("```json")
@@ -564,6 +588,8 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
         "period": f"{start} ~ {end}",
         "is_merged": True,
         "days_tracked": diet_summary.get("days_with_data", 0),
+        "source_cache_path": str(cache_path) if cache_path.exists() else None,
+        "source_cache_fingerprint": cache_fingerprint,
         "llm_objective_input": objective_payload,
         "report_markdown": report,
     }

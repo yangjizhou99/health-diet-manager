@@ -8,6 +8,7 @@ notion_health_sync.py — 将健康报告数据同步到 Notion 笔记
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -57,6 +58,25 @@ def find_estimated_energy_days(metrics: dict) -> list:
         if "estimated" in source or "fallback" in method:
             days.append(day)
     return days
+
+
+def _metrics_fingerprint(metrics: dict) -> str:
+    payload = json.dumps(metrics or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def resolve_active_cache_path(data_dir: str, period: str, target: str) -> Path:
+    dd = Path(data_dir)
+    canonical = dd / f"health_cache_{period}_{target}.json"
+    pointer = dd / f"health_cache_{period}_{target}.latest.json"
+    if pointer.exists():
+        pointer_json = json.loads(pointer.read_text(encoding="utf-8"))
+        active_file = pointer_json.get("active_cache_file")
+        if active_file:
+            candidate = dd / active_file
+            if candidate.exists():
+                return candidate
+    return canonical
 
 
 def save_config(data_dir: str, config: dict):
@@ -1874,7 +1894,7 @@ def find_matching_cache(data_dir: str, report_json: dict) -> dict:
     if not target:
         return None
 
-    cache_path = Path(data_dir) / f"health_cache_{period}_{target}.json"
+    cache_path = resolve_active_cache_path(data_dir, period, target)
     if not cache_path.exists() and target:
         print(f"[Notion] 缓存 {cache_path.name} 不存在，尝试自动同步...", file=sys.stderr)
         try:
@@ -1883,6 +1903,7 @@ def find_matching_cache(data_dir: str, report_json: dict) -> dict:
                 sys.path.insert(0, scripts_dir)
             from health_data_sync import fetch_data
             fetch_data(period, target, data_dir, strict_real_data=strict_real_data)
+            cache_path = resolve_active_cache_path(data_dir, period, target)
         except Exception as e:
             print(f"[Notion] 自动同步失败: {e}", file=sys.stderr)
     if cache_path.exists():
@@ -1902,6 +1923,29 @@ def find_matching_cache(data_dir: str, report_json: dict) -> dict:
     return None
 
 
+def validate_report_cache_consistency(report_json: dict, cache_json: dict):
+    if not report_json:
+        return False, "报告为空，无法校验一致性。"
+    if not cache_json:
+        return False, "未找到可用缓存，拒绝推送。"
+
+    report_fp = report_json.get("source_cache_fingerprint")
+    cache_fp = cache_json.get("cache_meta", {}).get("cache_fingerprint")
+    if not cache_fp:
+        cache_fp = _metrics_fingerprint(cache_json.get("metrics", {}))
+
+    # 新版报告必须带上 source_cache_fingerprint，避免推送历史混合口径报告。
+    if not report_fp:
+        return False, "报告缺少 source_cache_fingerprint，疑似旧版本报告，拒绝推送。"
+    if report_fp != cache_fp:
+        return False, (
+            "报告与当前缓存指纹不一致，拒绝推送。"
+            f" report={report_fp[:12]} cache={cache_fp[:12]}"
+        )
+
+    return True, "ok"
+
+
 def push_report(args):
     """推送指定的报告到 Notion。"""
     data_dir = args.data_dir
@@ -1919,6 +1963,10 @@ def push_report(args):
 
     report_json = json.loads(report_path.read_text(encoding="utf-8"))
     cache_json = find_matching_cache(data_dir, report_json)
+    ok, reason = validate_report_cache_consistency(report_json, cache_json)
+    if not ok:
+        print(f"❌ 推送前一致性校验失败: {reason}")
+        sys.exit(1)
 
     # 构建 blocks
     blocks = build_notion_page_blocks(report_json, cache_json)
@@ -1965,6 +2013,10 @@ def preview_template(args):
 
     report_json = json.loads(Path(report_path).read_text(encoding="utf-8"))
     cache_json = find_matching_cache(data_dir, report_json)
+    ok, reason = validate_report_cache_consistency(report_json, cache_json)
+    if not ok:
+        print(f"❌ 模板预览一致性校验失败: {reason}")
+        sys.exit(1)
     blocks = build_notion_page_blocks(report_json, cache_json)
 
     output_path = Path(data_dir) / "notion_template_preview.json"

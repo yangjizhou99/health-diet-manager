@@ -4,6 +4,7 @@ health_data_sync.py - 外部健康数据同步工具
 功能: set-location, fetch
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -362,6 +363,49 @@ def _find_estimated_energy_days(metrics):
     return estimated_days
 
 
+def _metrics_fingerprint(metrics):
+    payload = json.dumps(metrics or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _write_cache_files(dd, period, target_date, output_data):
+    base_name = f"health_cache_{period}_{target_date}"
+    canonical_path = dd / f"{base_name}.json"
+    pointer_path = dd / f"{base_name}.latest.json"
+
+    generated_at = datetime.now().strftime("%Y%m%d_%H%M%S")
+    versioned_name = f"{base_name}_{generated_at}.json"
+    versioned_path = dd / versioned_name
+
+    metrics = output_data.get("metrics", {}) if isinstance(output_data, dict) else {}
+    fingerprint = _metrics_fingerprint(metrics)
+
+    if isinstance(output_data, dict):
+        meta = {
+            "cache_fingerprint": fingerprint,
+            "cache_generated_at": datetime.now().isoformat(),
+            "cache_file": versioned_name,
+        }
+        output_data["cache_meta"] = meta
+
+    # 1) 版本化缓存：永不覆盖
+    save_json(versioned_path, output_data)
+    # 2) 兼容旧逻辑：更新固定文件名
+    save_json(canonical_path, output_data)
+    # 3) latest 指针：指向当前有效版本
+    save_json(pointer_path, {
+        "status": output_data.get("status") if isinstance(output_data, dict) else "unknown",
+        "period": period,
+        "target_date": target_date,
+        "active_cache_file": versioned_name,
+        "active_cache_path": str(versioned_path),
+        "cache_fingerprint": fingerprint,
+        "updated_at": datetime.now().isoformat(),
+    })
+
+    return canonical_path, versioned_path, pointer_path
+
+
 def fetch_data(period, target_date, data_dir, strict_real_data=False):
     dd = Path(data_dir)
     dd.mkdir(parents=True, exist_ok=True)
@@ -490,7 +534,16 @@ def fetch_data(period, target_date, data_dir, strict_real_data=False):
             )
             exit_code = 1
 
-    save_json(cache_path, output_data)
+    canonical_path, versioned_path, pointer_path = _write_cache_files(dd, period, target_date, output_data)
+    output_data.setdefault("cache_meta", {})
+    output_data["cache_meta"].update({
+        "canonical_cache_path": str(canonical_path),
+        "latest_pointer_path": str(pointer_path),
+    })
+    # 将路径信息同步回 canonical/versioned，方便后续追溯
+    save_json(canonical_path, output_data)
+    save_json(versioned_path, output_data)
+
     print(json.dumps(output_data, ensure_ascii=False, indent=2))
     return exit_code
 
