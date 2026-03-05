@@ -11,6 +11,9 @@ from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
+import tempfile
+import shutil
+import subprocess
 
 
 def load_json(fp, default=None):
@@ -38,6 +41,38 @@ def _is_remote_location(location):
         return False
     parsed = urlparse(location)
     return parsed.scheme in {"http", "https", "ftp", "s3", "gs"}
+
+def _is_google_drive_token(location):
+    if not location:
+        return False
+    # Google Drive folder token
+    is_valid_len = 15 <= len(location) <= 45
+    has_no_slashes = "/" not in location and "\\" not in location
+    return (is_valid_len or location.startswith("0AIK")) and has_no_slashes and not Path(location).exists()
+
+def _download_from_drive(folder_token, dest_dir):
+    print("尝试使用 gog drive 下载...", file=sys.stderr)
+    try:
+        res = subprocess.run(f"gog drive download {folder_token} --output \"{dest_dir}\"", shell=True, capture_output=True, text=True)
+        if res.returncode == 0:
+            print("gog drive 下载成功！", file=sys.stderr)
+            return str(dest_dir)
+        else:
+            print(f"gog drive 下载失败，准备回退到 gdown。原因: {res.stderr.strip()}", file=sys.stderr)
+    except Exception as e:
+        print(f"执行 gog drive 报错: {e}，回退到 gdown", file=sys.stderr)
+
+    try:
+        import gdown
+    except ImportError:
+        print("未检测到 gdown，正在自动安装...", file=sys.stderr)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "gdown", "--quiet"])
+        import gdown
+
+    url = f"https://drive.google.com/drive/folders/{folder_token}"
+    print(f"正在使用 gdown 从 Google Drive 下载: {url}", file=sys.stderr)
+    gdown.download_folder(url, output=str(dest_dir), quiet=True, use_cookies=False)
+    return str(dest_dir)
 
 
 def _parse_target_date(target_date):
@@ -134,19 +169,39 @@ def fetch_data(period, target_date, data_dir):
 
     loc = cfg["health_data_location"]
     if _is_remote_location(loc):
-        result = _error_result(period, target_date, f"当前仅支持本地目录，不支持远程 URL: {loc}")
+        result = _error_result(period, target_date, f"不支持远程 URL: {loc}")
         print(json.dumps(result, ensure_ascii=False))
         return 1
 
-    if not Path(loc).is_dir():
-        result = _error_result(period, target_date, f"数据目录不存在或不可访问: {loc}")
-        print(json.dumps(result, ensure_ascii=False))
-        return 1
+    temp_dir = None
+    extracted_dir = None
 
-    extracted_dir = _find_health_data_root(loc)
+    if _is_google_drive_token(loc):
+        temp_dir = tempfile.mkdtemp(prefix="health_sync_gdrive_")
+        try:
+            downloaded_dir = _download_from_drive(loc, temp_dir)
+            extracted_dir = _find_health_data_root(downloaded_dir)
+            if extracted_dir is None:
+                result = _error_result(period, target_date, f"在 Google Drive 下载内容中未找到包含“健康同步 *”的目录")
+        except Exception as e:
+            result = _error_result(period, target_date, f"从 Google Drive 下载失败: {e}")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            print(json.dumps(result, ensure_ascii=False))
+            return 1
+    else:
+        if not Path(loc).is_dir():
+            result = _error_result(period, target_date, f"数据目录不存在或不可访问: {loc}")
+            print(json.dumps(result, ensure_ascii=False))
+            return 1
+        extracted_dir = _find_health_data_root(loc)
+        if extracted_dir is None:
+            result = _error_result(period, target_date, f"在 {loc} 及其子目录中未找到包含“健康同步 *”数据文件夹的目录")
+
     if extracted_dir is None:
-        result = _error_result(period, target_date, f"在 {loc} 及其子目录中未找到包含“健康同步 *”数据文件夹的目录")
         print(json.dumps(result, ensure_ascii=False))
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
         return 1
 
     try:
@@ -168,12 +223,16 @@ def fetch_data(period, target_date, data_dir):
             "period": period,
             "target_date": target_date,
             "metrics": comprehensive_report.get("metrics", {}),
-            "message": f"成功从 {loc} 抓取并计算了 {start_date} ~ {end_date} 的健康数据",
+            "message": f"成功抓取并计算了 {start_date} ~ {end_date} 的健康数据",
         }
         exit_code = 0
     except Exception as e:
         output_data = _error_result(period, target_date, f"健康数据引擎运行失败: {e}")
         exit_code = 1
+    finally:
+        # 清理临时目录
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     cache_path = dd / f"health_cache_{period}_{target_date}.json"
     save_json(cache_path, output_data)
