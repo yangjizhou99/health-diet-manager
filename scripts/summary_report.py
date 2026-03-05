@@ -8,7 +8,7 @@ import argparse, json, sys
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding='utf-8')
-    except:
+    except Exception:
         pass
 
 from datetime import datetime, date, timedelta
@@ -19,12 +19,19 @@ def load_json(fp, default=None):
     if fp.exists():
         try:
             with open(fp,'r',encoding='utf-8') as f: return json.load(f)
-        except: return default
+        except Exception: return default
     return default
+
+def save_json(fp, data):
+    tmp = fp.with_suffix('.tmp')
+    with open(tmp,'w',encoding='utf-8') as f: json.dump(data,f,ensure_ascii=False,indent=2)
+    tmp.replace(fp)
 
 def get_date_range(end_date_str, report_type):
     end = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else date.today()
-    if report_type == "weekly":
+    if report_type == "daily":
+        start = end
+    elif report_type == "weekly":
         start = end - timedelta(days=6)
     else:
         start = end.replace(day=1)
@@ -158,14 +165,16 @@ def set_schedule(frequency, time_str, data_dir):
     cfg["frequency"] = frequency
     cfg["time"] = time_str
     cfg["updated_at"] = datetime.now().isoformat()
-    with open(cfg_path, 'w', encoding='utf-8') as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    save_json(cfg_path, cfg)
     print(json.dumps({"status": "success", "message": f"成功设定定期汇报任务: {frequency} 周期, 触发时间 {time_str}"}, ensure_ascii=False))
 
 def generate_merged_report(data_dir, report_type, end_date_str):
     # 复用原来的生成逻辑片段，但末尾增加外部健康数据模拟指导
     dd = Path(data_dir)
-    end = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else date.today()
+    # 统一处理 None，确保后续 f-string 和缓存路径正确
+    if not end_date_str:
+        end_date_str = date.today().isoformat()
+    end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
     start, _ = get_date_range(end_date_str, report_type)
     
     lines = []
@@ -243,7 +252,7 @@ def main():
     pa = argparse.ArgumentParser(description="周报月报生成器")
     sp = pa.add_subparsers(dest="command")
     p1 = sp.add_parser("generate")
-    p1.add_argument("--type", required=True, choices=["weekly","monthly"])
+    p1.add_argument("--type", required=True, choices=["daily","weekly","monthly"])
     p1.add_argument("--end-date", default=None)
     p1.add_argument("--data-dir", required=True)
     

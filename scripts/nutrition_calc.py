@@ -16,7 +16,7 @@ def load_json(fp, default=None):
     if fp.exists():
         try:
             with open(fp,'r',encoding='utf-8') as f: return json.load(f)
-        except: return default
+        except Exception: return default
     return default
 
 def save_json(fp, data):
@@ -29,8 +29,10 @@ ACTIVITY_MULT = {"久坐":1.2,"sedentary":1.2,"轻度活动":1.375,"light":1.375
 GOAL_ADJ = {"减脂":-500,"lose_fat":-500,"慢速减脂":-300,"增肌":300,
     "build_muscle":300,"维持体重":0,"maintain":0,"均衡营养":0,"balanced":0}
 MACRO_R = {
-    "减脂":{"p":0.30,"c":0.40,"f":0.30},"增肌":{"p":0.30,"c":0.50,"f":0.20},
-    "维持体重":{"p":0.20,"c":0.55,"f":0.25},"均衡营养":{"p":0.20,"c":0.55,"f":0.25},
+    "减脂":{"p":0.30,"c":0.40,"f":0.30},"lose_fat":{"p":0.30,"c":0.40,"f":0.30},
+    "增肌":{"p":0.30,"c":0.50,"f":0.20},"build_muscle":{"p":0.30,"c":0.50,"f":0.20},
+    "维持体重":{"p":0.20,"c":0.55,"f":0.25},"maintain":{"p":0.20,"c":0.55,"f":0.25},
+    "均衡营养":{"p":0.20,"c":0.55,"f":0.25},"balanced":{"p":0.20,"c":0.55,"f":0.25},
     "慢速减脂":{"p":0.25,"c":0.45,"f":0.30},
 }
 
@@ -116,7 +118,7 @@ def cmd_query_remaining(a):
     dd=ensure_data_dir(a.data_dir)
     log=load_json(dd/"daily_log.json",{"records":[]})
     prof=load_json(dd/"user_profile.json"); tgt=prof.get("daily_targets",{})
-    today=date.today().isoformat()
+    today=a.date or date.today().isoformat()
     dt={k:0 for k in ["calories","protein","carbs","fat","fiber","sodium"]}
     for r in log["records"]:
         if r["date"]==today:
@@ -181,7 +183,7 @@ def main():
     p2.add_argument("--foods",required=True); p2.add_argument("--date",default=None)
     p2.add_argument("--data-dir",required=True)
     p3=sp.add_parser("daily-summary"); p3.add_argument("--date",default=None); p3.add_argument("--data-dir",required=True)
-    p4=sp.add_parser("query-remaining"); p4.add_argument("--data-dir",required=True)
+    p4=sp.add_parser("query-remaining"); p4.add_argument("--date",default=None); p4.add_argument("--data-dir",required=True)
     p5=sp.add_parser("update-weight"); p5.add_argument("--weight",type=float,required=True); p5.add_argument("--data-dir",required=True)
     p6=sp.add_parser("list-today"); p6.add_argument("--date",default=None); p6.add_argument("--data-dir",required=True)
     p7=sp.add_parser("undo-last"); p7.add_argument("--data-dir",required=True)

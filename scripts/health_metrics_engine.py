@@ -1,6 +1,9 @@
 import os
+import sys
 import glob
+import json
 import pandas as pd
+from pathlib import Path
 from datetime import datetime, timedelta
 
 class HealthDataParser:
@@ -26,7 +29,7 @@ class HealthDataParser:
                     df = df[['Datetime', '心率']]
                     df_list.append(df)
             except Exception as e:
-                pass
+                print(f"[Engine WARN] 加载心率文件失败 {f}: {e}", file=sys.stderr)
         if not df_list:
             return pd.DataFrame()
         df_all = pd.concat(df_list, ignore_index=True)
@@ -47,8 +50,8 @@ class HealthDataParser:
                     df['Date'] = pd.to_datetime(date_str, format='%Y.%m.%d', errors='coerce').dt.date
                     df = df[['Date', '持续时间（以秒为单位）', '睡眠阶段']]
                     df_list.append(df)
-            except:
-                pass
+            except Exception as e:
+                print(f"[Engine WARN] 加载睡眠文件失败 {f}: {e}", file=sys.stderr)
         if not df_list:
             return pd.DataFrame()
         return pd.concat(df_list, ignore_index=True)
@@ -61,13 +64,13 @@ class HealthDataParser:
         for f in files:
             try:
                 df = pd.read_csv(f)
-                if '日期' in df.columns and '体重' in df.columns and '体脂率' in df.columns:
+                if '日期' in df.columns and '体重' in df.columns and '体脂率' in df.columns and '时间' in df.columns:
                     date_time_str = df['日期'].astype(str).str.split(' ').str[0] + ' ' + df['时间'].astype(str)
                     df['Datetime'] = pd.to_datetime(date_time_str, format='%Y.%m.%d %H:%M:%S', errors='coerce')
                     df = df.dropna(subset=['Datetime', '体重'])
                     df_list.append(df)
-            except:
-                pass
+            except Exception as e:
+                print(f"[Engine WARN] 加载体重文件失败 {f}: {e}", file=sys.stderr)
         if not df_list:
             return pd.DataFrame()
         df_all = pd.concat(df_list, ignore_index=True)
@@ -81,13 +84,13 @@ class HealthDataParser:
         for f in files:
             try:
                 df = pd.read_csv(f)
-                if '日期' in df.columns and '步数' in df.columns:
+                if '日期' in df.columns and '步数' in df.columns and '时间' in df.columns:
                     date_time_str = df['日期'].astype(str).str.split(' ').str[0] + ' ' + df['时间'].astype(str)
                     df['Datetime'] = pd.to_datetime(date_time_str, format='%Y.%m.%d %H:%M:%S', errors='coerce')
                     df = df.dropna(subset=['Datetime', '步数'])
                     df_list.append(df[["Datetime", "步数"]])
-            except:
-                pass
+            except Exception as e:
+                print(f"[Engine WARN] 加载步数文件失败 {f}: {e}", file=sys.stderr)
         if not df_list:
             return pd.DataFrame()
         df_all = pd.concat(df_list, ignore_index=True)
@@ -101,13 +104,13 @@ class HealthDataParser:
         for f in files:
             try:
                 df = pd.read_csv(f)
-                if '日期' in df.columns and '总消耗' in df.columns:
+                if '日期' in df.columns and '总消耗' in df.columns and '时间' in df.columns:
                     date_time_str = df['日期'].astype(str).str.split(' ').str[0] + ' ' + df['时间'].astype(str)
                     df['Datetime'] = pd.to_datetime(date_time_str, format='%Y.%m.%d %H:%M:%S', errors='coerce')
                     df = df.dropna(subset=['Datetime'])
                     df_list.append(df)
-            except:
-                pass
+            except Exception as e:
+                print(f"[Engine WARN] 加载能量文件失败 {f}: {e}", file=sys.stderr)
         if not df_list:
             return pd.DataFrame()
         df_all = pd.concat(df_list, ignore_index=True)
@@ -293,8 +296,9 @@ class ActivityAnalyzer:
 
 class EnergyAnalyzer:
     """能耗审计纯数据计算 (支持基于心率的卡路里回退推算)"""
-    def __init__(self, age=30, is_male=True):
+    def __init__(self, age=30, is_male=True, height=175):
         self.age = age
+        self.height = height
         self.gender_factor = 1 if is_male else 0
 
     def analyze(self, energy_df, hr_df, weight_df):
@@ -326,7 +330,8 @@ class EnergyAnalyzer:
             active_burn = 0.0
             resting_burn = 0.0
             tdee = 0.0
-            source_active = "external" 
+            source_active = "external"
+            external_tdee = None  # 保留外部设备提供的原始 TDEE
             
             # 首先尝试从 external energy df 读取
             if not energy_df.empty and date_str in energy_df['Date'].astype(str).values:
@@ -334,7 +339,8 @@ class EnergyAnalyzer:
                 latest_record = group.sort_values('Datetime').iloc[-1]
                 active_burn = float(latest_record.get('活动消耗', 0))
                 resting_burn = float(latest_record.get('静息消耗', 0))
-                tdee = float(latest_record.get('总消耗', 0))
+                external_tdee = float(latest_record.get('总消耗', 0))
+                tdee = external_tdee
 
             # 【核心逻辑】：如果外部同步的活动卡路里为 0，且当天有心率数据，启用 Keytel 公式回退推算
             if active_burn == 0 and date_str in daily_hr:
@@ -370,36 +376,64 @@ class EnergyAnalyzer:
                 # 如果没有 external resting_burn， 用 Mifflin-St Jeor 估算基础代谢
                 if resting_burn == 0:
                      if self.gender_factor == 1:
-                         resting_burn = (10 * weight) + 6.25 * 175 - (5 * self.age) + 5 # 假设身高175
+                         resting_burn = (10 * weight) + 6.25 * self.height - (5 * self.age) + 5
                      else:
-                         resting_burn = (10 * weight) + 6.25 * 165 - (5 * self.age) - 161
+                         resting_burn = (10 * weight) + 6.25 * self.height - (5 * self.age) - 161
                 
                 tdee = active_burn + resting_burn
 
+            # NEAT = 设备报告的总消耗 - 静息消耗 - 活动消耗 (仅外部数据源有差值)
+            neat = round(max(0, external_tdee - resting_burn - active_burn), 1) if external_tdee is not None else 0.0
             reports[date_str] = {
                 "active_burn_kcal": round(active_burn, 1),
                 "resting_burn_kcal": round(resting_burn, 1),
                 "tdee_kcal": round(tdee, 1),
-                "neat_estimate_kcal": round(max(0, tdee - resting_burn - active_burn), 1),
+                "neat_estimate_kcal": neat,
                 "active_burn_source": source_active
             }
             
         return reports
 
-def generate_health_report(extracted_dir):
+def _load_user_profile(data_dir=None):
+    """尝试从 data 目录加载用户档案以获取年龄、性别和身高"""
+    default = {"age": 30, "is_male": True, "height": 175}
+    if data_dir is None:
+        return default
+    profile_path = Path(data_dir) / "user_profile.json"
+    if profile_path.exists():
+        try:
+            with open(profile_path, 'r', encoding='utf-8') as f:
+                prof = json.load(f)
+            age = int(prof.get("age", 30))
+            gender = prof.get("gender", "男")
+            is_male = gender in ("男", "male", "m")
+            height = float(prof.get("height", 175))
+            return {"age": age, "is_male": is_male, "height": height}
+        except Exception:
+            pass
+    return default
+
+def generate_health_report(extracted_dir, data_dir=None):
     """引擎入口: 统筹分析并生成结构化报告 (纯数据版)"""
     print(f"[Engine] 加载数据目录: {extracted_dir}")
     parser = HealthDataParser(extracted_dir)
+    
+    # 从用户档案读取年龄、性别和身高，不再硬编码
+    user_info = _load_user_profile(data_dir)
+    age = user_info["age"]
+    is_male = user_info["is_male"]
+    height = user_info["height"]
+    print(f"[Engine] 使用用户参数: age={age}, is_male={is_male}, height={height}")
     
     hr_df = parser.load_heart_rate()
     weight_df = parser.load_weight()
     energy_df = parser.load_energy()
 
-    hr_report = HeartRateAnalyzer(age=30).analyze(hr_df)
+    hr_report = HeartRateAnalyzer(age=age).analyze(hr_df)
     sleep_report = SleepAnalyzer().analyze(parser.load_sleep())
     body_comp_report = BodyCompositionAnalyzer().analyze(weight_df)
     activity_report = ActivityAnalyzer().analyze(parser.load_steps())
-    energy_report = EnergyAnalyzer(age=30, is_male=True).analyze(energy_df, hr_df, weight_df)
+    energy_report = EnergyAnalyzer(age=age, is_male=is_male, height=height).analyze(energy_df, hr_df, weight_df)
     
     comprehensive_report = {
         "analysis_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -416,7 +450,6 @@ def generate_health_report(extracted_dir):
 
 if __name__ == "__main__":
     # Test Run
-    import json
     test_dir = r"d:\gptWebapp\skills设计\健康信息例子\extracted"
     if os.path.exists(test_dir):
         report = generate_health_report(test_dir)

@@ -12,7 +12,7 @@ def load_json(fp, default=None):
     if fp.exists():
         try:
             with open(fp,'r',encoding='utf-8') as f: return json.load(f)
-        except: return default
+        except Exception: return default
     return default
 
 def save_json(fp, data):

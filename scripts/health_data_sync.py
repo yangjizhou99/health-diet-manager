@@ -14,12 +14,14 @@ def load_json(fp, default=None):
     if fp.exists():
         try:
             with open(fp, 'r', encoding='utf-8') as f: return json.load(f)
-        except: return default
+        except Exception: return default
     return default
 
 def save_json(fp, data):
-    with open(fp, 'w', encoding='utf-8') as f:
+    tmp = fp.with_suffix('.tmp')
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp.replace(fp)
 
 def set_location(location, data_dir):
     dd = Path(data_dir)
@@ -30,6 +32,34 @@ def set_location(location, data_dir):
     cfg["updated_at"] = datetime.now().isoformat()
     save_json(cfg_path, cfg)
     print(json.dumps({"status": "success", "message": f"成功保存外部数据位置: {location}"}, ensure_ascii=False))
+
+def _find_health_data_root(root_dir, max_depth=3):
+    """从用户指定的根目录开始，自动搜索包含 '健康同步 *' 子目录的那一层。
+    支持任意目录结构，最多向下搜索 max_depth 层。"""
+    HEALTH_MARKERS = ["健康同步 心率", "健康同步 睡眠", "健康同步 体重", "健康同步 步数"]
+    
+    def _has_health_subdirs(d):
+        """检查目录 d 下是否存在至少 2 个健康数据标记子目录"""
+        if not os.path.isdir(d):
+            return False
+        found = sum(1 for m in HEALTH_MARKERS if os.path.isdir(os.path.join(d, m)))
+        return found >= 2
+    
+    # BFS 搜索，按层级依次检查
+    from collections import deque
+    queue = deque([(root_dir, 0)])
+    while queue:
+        current, depth = queue.popleft()
+        if _has_health_subdirs(current):
+            return current
+        if depth < max_depth:
+            try:
+                for entry in os.scandir(current):
+                    if entry.is_dir():
+                        queue.append((entry.path, depth + 1))
+            except PermissionError:
+                pass
+    return None
 
 def fetch_data(period, target_date, data_dir):
     dd = Path(data_dir)
@@ -42,10 +72,14 @@ def fetch_data(period, target_date, data_dir):
 
     loc = cfg["health_data_location"]
     
-    # 尝试找到提取目录
-    extracted_dir = os.path.join(loc, "健康信息例子", "extracted") if "健康信息例子" in loc else os.path.join(loc, "extracted")
-    if not os.path.exists(extracted_dir):
-        extracted_dir = loc
+    # 智能搜索：从用户指定的根目录开始，自动查找包含 "健康同步 *" 子目录的层级
+    extracted_dir = _find_health_data_root(loc)
+    if extracted_dir is None:
+        print(json.dumps({
+            "status": "error",
+            "message": f"在 {loc} 及其子目录中未找到包含 '健康同步 *' 数据文件夹的目录。请确认数据位置是否正确。"
+        }, ensure_ascii=False))
+        return
         
     try:
         # 动态导入引擎
@@ -54,7 +88,7 @@ def fetch_data(period, target_date, data_dir):
             sys.path.append(scripts_dir)
             
         from health_metrics_engine import generate_health_report
-        comprehensive_report = generate_health_report(extracted_dir)
+        comprehensive_report = generate_health_report(extracted_dir, data_dir=data_dir)
         
         output_data = {
             "status": "success",
