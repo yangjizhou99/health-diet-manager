@@ -37,6 +37,180 @@ def get_date_range(end_date_str, report_type):
         start = end.replace(day=1)
     return start, end
 
+def build_daily_nutrition(log, start, end):
+    daily = {}
+    cur = start
+    while cur <= end:
+        ds = cur.isoformat()
+        daily[ds] = {
+            "calories": 0,
+            "protein": 0,
+            "carbs": 0,
+            "fat": 0,
+            "fiber": 0,
+            "sodium": 0,
+            "meals": 0,
+            "foods": [],
+        }
+        cur += timedelta(days=1)
+
+    for r in log.get("records", []):
+        d = r.get("date")
+        if d in daily:
+            totals = r.get("totals", {})
+            for k in ["calories", "protein", "carbs", "fat", "fiber", "sodium"]:
+                daily[d][k] += totals.get(k, 0)
+            daily[d]["meals"] += 1
+            daily[d]["foods"].extend([f.get("name", "未知食物") for f in r.get("foods", [])])
+    return daily
+
+def summarize_diet_period(daily, targets):
+    days_with_data = [d for d, v in daily.items() if v["meals"] > 0]
+    n = len(days_with_data)
+    if n == 0:
+        return {
+            "days_with_data": 0,
+            "avg": {},
+            "energy_balance": {},
+            "top_foods": [],
+            "score": None,
+        }
+
+    avgs = {
+        k: round(sum(daily[d][k] for d in days_with_data) / n, 1)
+        for k in ["calories", "protein", "carbs", "fat", "fiber", "sodium"]
+    }
+
+    total_in = round(sum(daily[d]["calories"] for d in days_with_data), 1)
+    avg_in = round(total_in / n, 1)
+
+    all_foods = []
+    for d in days_with_data:
+        all_foods.extend(daily[d]["foods"])
+
+    top_foods = []
+    if all_foods:
+        from collections import Counter
+        top_foods = Counter(all_foods).most_common(8)
+
+    scores = []
+    for d in days_with_data:
+        sc = 100
+        for k in ["calories", "protein", "carbs", "fat", "fiber"]:
+            t = targets.get(k, 0)
+            if t > 0:
+                dev = abs(daily[d][k] / t * 100 - 100)
+                if dev > 30:
+                    sc -= 15
+                elif dev > 20:
+                    sc -= 10
+                elif dev > 10:
+                    sc -= 5
+        scores.append(max(0, sc))
+
+    return {
+        "days_with_data": n,
+        "avg": avgs,
+        "avg_intake_kcal": avg_in,
+        "total_intake_kcal": total_in,
+        "top_foods": top_foods,
+        "score": round(sum(scores) / len(scores)),
+    }
+
+def compute_avg_tdee(metrics, target_dates):
+    energy_metrics = metrics.get("energy_expenditure", {})
+    values = [energy_metrics[d].get("tdee_kcal", 0) for d in target_dates if d in energy_metrics]
+    valid = [v for v in values if v > 0]
+    if not valid:
+        return 0.0
+    return round(sum(valid) / len(valid), 1)
+
+def build_llm_objective_payload(report_type, start, end, target_dates, targets, diet_summary, metrics):
+    activity_metrics = metrics.get("daily_activity", {})
+    sleep_metrics = metrics.get("sleep_recovery", {})
+    hr_metrics = metrics.get("cardiovascular_health", {})
+    energy_metrics = metrics.get("energy_expenditure", {})
+    body_metrics = metrics.get("body_composition", {})
+
+    steps = [activity_metrics[d].get("total_steps", 0) for d in target_dates if d in activity_metrics]
+    sedentary_blocks = sum([activity_metrics[d].get("sedentary_3h_blocks_count", 0) for d in target_dates if d in activity_metrics])
+
+    sleep_hours = [sleep_metrics[d].get("total_sleep_hours", 0) for d in target_dates if d in sleep_metrics]
+    deep_ratio = [sleep_metrics[d].get("deep_sleep_ratio", 0) for d in target_dates if d in sleep_metrics]
+    awake_mins = [sleep_metrics[d].get("awake_interruptions_mins", 0) for d in target_dates if d in sleep_metrics]
+
+    tdee_values = [energy_metrics[d].get("tdee_kcal", 0) for d in target_dates if d in energy_metrics]
+    active_burn_values = [energy_metrics[d].get("active_burn_kcal", 0) for d in target_dates if d in energy_metrics]
+    resting_burn_values = [energy_metrics[d].get("resting_burn_kcal", 0) for d in target_dates if d in energy_metrics]
+
+    body_records = [body_metrics[d] for d in target_dates if d in body_metrics]
+    latest_body = body_records[-1] if body_records else {}
+
+    avg_tdee = round(sum([v for v in tdee_values if v > 0]) / len([v for v in tdee_values if v > 0]), 1) if [v for v in tdee_values if v > 0] else 0.0
+    avg_intake = diet_summary.get("avg_intake_kcal", 0)
+
+    return {
+        "report_period": {
+            "type": report_type,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "days": len(target_dates),
+        },
+        "diet": {
+            "days_with_records": diet_summary.get("days_with_data", 0),
+            "avg_daily": diet_summary.get("avg", {}),
+            "avg_intake_kcal": avg_intake,
+            "target_daily": targets,
+            "diet_balance_score": diet_summary.get("score"),
+            "top_foods": [{"name": name, "count": cnt} for name, cnt in diet_summary.get("top_foods", [])],
+        },
+        "activity": {
+            "avg_steps": round(sum(steps) / len(steps), 1) if steps else 0,
+            "max_steps": max(steps) if steps else 0,
+            "total_sedentary_3h_blocks": sedentary_blocks,
+        },
+        "sleep": {
+            "avg_sleep_hours": round(sum(sleep_hours) / len(sleep_hours), 2) if sleep_hours else 0,
+            "avg_deep_sleep_ratio": round(sum(deep_ratio) / len(deep_ratio), 3) if deep_ratio else 0,
+            "total_awake_interruptions_minutes": round(sum(awake_mins), 1) if awake_mins else 0,
+        },
+        "cardiovascular": {
+            "estimated_rhr": hr_metrics.get("baseline", {}).get("estimated_rhr"),
+            "observed_peak_hr": hr_metrics.get("baseline", {}).get("observed_peak_hr"),
+            "inferred_workout_count": len(hr_metrics.get("inferred_workouts", [])),
+            "total_exercise_minutes_zone2_plus": hr_metrics.get("total_exercise_minutes_zone2_plus", 0),
+        },
+        "energy": {
+            "avg_tdee_kcal": avg_tdee,
+            "avg_active_burn_kcal": round(sum(active_burn_values) / len(active_burn_values), 1) if active_burn_values else 0,
+            "avg_resting_burn_kcal": round(sum(resting_burn_values) / len(resting_burn_values), 1) if resting_burn_values else 0,
+            "avg_intake_minus_tdee_kcal": round(avg_intake - avg_tdee, 1) if avg_intake and avg_tdee else None,
+        },
+        "body_composition_latest": latest_body,
+    }
+
+def save_report_files(data_dir, report_type, start, end, report_markdown, payload):
+    dd = Path(data_dir)
+    out_dir = dd / "reports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    base_name = f"health_report_{report_type}_{start.isoformat()}_to_{end.isoformat()}"
+    md_path = out_dir / f"{base_name}.md"
+    json_path = out_dir / f"{base_name}.json"
+
+    if md_path.exists() or json_path.exists():
+        ts = datetime.now().strftime("%H%M%S")
+        md_path = out_dir / f"{base_name}_{ts}.md"
+        json_path = out_dir / f"{base_name}_{ts}.json"
+
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(report_markdown)
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    return str(md_path), str(json_path)
+
 def make_bar(val, maxval, width=20):
     if maxval <= 0: return "░"*width
     filled = min(width, round(val/maxval*width))
@@ -49,21 +223,7 @@ def generate_report(data_dir, report_type, end_date_str):
     tgt = prof.get("daily_targets", {})
     start, end = get_date_range(end_date_str, report_type)
 
-    # 按日期分组
-    daily = {}
-    cur = start
-    while cur <= end:
-        ds = cur.isoformat()
-        daily[ds] = {"calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sodium":0,"meals":0,"foods":[]}
-        cur += timedelta(days=1)
-
-    for r in log["records"]:
-        d = r["date"]
-        if d in daily:
-            for k in ["calories","protein","carbs","fat","fiber","sodium"]:
-                daily[d][k] += r["totals"].get(k, 0)
-            daily[d]["meals"] += 1
-            daily[d]["foods"].extend([f["name"] for f in r["foods"]])
+    daily = build_daily_nutrition(log, start, end)
 
     # 统计
     days_with_data = [d for d,v in daily.items() if v["meals"]>0]
@@ -154,8 +314,17 @@ def generate_report(data_dir, report_type, end_date_str):
             lines.append("")
 
     report = "\n".join(lines)
-    print(json.dumps({"status":"success","report_type":report_type,
-        "period":title,"days_tracked":n,"report_markdown":report},ensure_ascii=False,indent=2))
+    payload = {
+        "status": "success",
+        "report_type": report_type,
+        "period": title,
+        "days_tracked": n,
+        "report_markdown": report,
+    }
+    md_path, json_path = save_report_files(data_dir, report_type, start, end, report, payload)
+    payload["saved_report_markdown_path"] = md_path
+    payload["saved_report_json_path"] = json_path
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 def set_schedule(frequency, time_str, data_dir):
     dd = Path(data_dir)
@@ -169,20 +338,40 @@ def set_schedule(frequency, time_str, data_dir):
     print(json.dumps({"status": "success", "message": f"成功设定定期汇报任务: {frequency} 周期, 触发时间 {time_str}"}, ensure_ascii=False))
 
 def generate_merged_report(data_dir, report_type, end_date_str):
-    # 复用原来的生成逻辑片段，但末尾增加外部健康数据模拟指导
     dd = Path(data_dir)
-    # 统一处理 None，确保后续 f-string 和缓存路径正确
     if not end_date_str:
         end_date_str = date.today().isoformat()
     end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
     start, _ = get_date_range(end_date_str, report_type)
+    target_dates = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
+
+    log = load_json(dd / "daily_log.json", {"records": []})
+    prof = load_json(dd / "user_profile.json")
+    targets = prof.get("daily_targets", {})
+    daily = build_daily_nutrition(log, start, end)
+    diet_summary = summarize_diet_period(daily, targets)
     
     lines = []
     lines.append(f"# 🧬 {report_type.capitalize()} 合并综合健康报告 ({start} ~ {end})\n")
     lines.append("*(结合饮食热量记录与外部设备活动数据进行交叉分析)*\n")
     
     lines.append("## 🍎 饮食模块分析")
-    lines.append("- 本周期平均热量与日常记录平稳。（简略展示，详见纯饮食报表）")
+    if diet_summary["days_with_data"] == 0:
+        lines.append("- 当前周期没有饮食记录。")
+    else:
+        avg = diet_summary["avg"]
+        lines.append(f"- **记录完整度**: {diet_summary['days_with_data']}/{len(target_dates)} 天")
+        lines.append(f"- **日均摄入**: {avg.get('calories', 0)} kcal | 蛋白质 {avg.get('protein', 0)}g | 碳水 {avg.get('carbs', 0)}g | 脂肪 {avg.get('fat', 0)}g")
+        if targets:
+            tgt_cal = targets.get("calories", 0)
+            if tgt_cal > 0:
+                pct = round(avg.get("calories", 0) / tgt_cal * 100)
+                lines.append(f"- **相对目标热量**: {pct}% (目标 {tgt_cal} kcal/天)")
+        lines.append(f"- **饮食均衡评分**: {diet_summary.get('score', 0)}/100")
+        if diet_summary.get("top_foods"):
+            food_line = "、".join([f"{name}({cnt}次)" for name, cnt in diet_summary["top_foods"][:5]])
+            lines.append(f"- **高频食物**: {food_line}")
+
     lines.append("\n## 🏃‍♂️ 外部健康指标概览")
     # 尝试加载缓存的外部数据（如果存在）
     period_key = "day" if report_type == "daily" else ("week" if report_type == "weekly" else "month")
@@ -191,9 +380,6 @@ def generate_merged_report(data_dir, report_type, end_date_str):
     if cache_path.exists():
         ext_data = load_json(cache_path)
         metrics = ext_data.get("metrics", {})
-        
-        # 找出当前周期内有效的所有日期
-        target_dates = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
         
         # 1. 提取日常活动
         activity_metrics = metrics.get("daily_activity", {})
@@ -263,13 +449,36 @@ def generate_merged_report(data_dir, report_type, end_date_str):
     else:
         lines.append("- 未检测到当期外部同步数据，请确保执行了 fetch 以连接健康系统。")
 
-    lines.append("\n## 💡 多维健康洞察与建议")
-    lines.append("> **【系统指令：请大语言模型（你）根据上述饮食数据和外部健康指标（如活动量、睡眠），运用健康与营养学知识，通过深度交叉分析，主动为用户生成一段专业、个性化的综合健康与饮食建议。】**")
-    
+    objective_payload = build_llm_objective_payload(
+        report_type=report_type,
+        start=start,
+        end=end,
+        target_dates=target_dates,
+        targets=targets,
+        diet_summary=diet_summary,
+        metrics=metrics if cache_path.exists() else {},
+    )
+
+    lines.append("\n## 🤖 建议生成输入（客观数据）")
+    lines.append("以下为原始客观指标，由大模型基于这些数据生成个性化建议。")
+    lines.append("```json")
+    lines.append(json.dumps(objective_payload, ensure_ascii=False, indent=2))
+    lines.append("```")
+
     report = "\n".join(lines)
-    print(json.dumps({"status":"success","report_type":report_type,
+    payload = {
+        "status": "success",
+        "report_type": report_type,
+        "period": f"{start} ~ {end}",
         "is_merged": True,
-        "report_markdown":report},ensure_ascii=False,indent=2))
+        "days_tracked": diet_summary.get("days_with_data", 0),
+        "llm_objective_input": objective_payload,
+        "report_markdown": report,
+    }
+    md_path, json_path = save_report_files(data_dir, report_type, start, end, report, payload)
+    payload["saved_report_markdown_path"] = md_path
+    payload["saved_report_json_path"] = json_path
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 def cmd_demo(_):
     print("📊 报告生成器 Demo")
