@@ -108,6 +108,8 @@ def _download_from_drive(folder_token, dest_dir):
     except Exception as e:
         print(f"rclone 报错: {e}", file=sys.stderr)
 
+    oauth_error = None
+
     # ── 方式 3: Google Drive API + OAuth 用户凭证 (最可靠) ──
     try:
         scripts_dir = os.path.dirname(os.path.abspath(__file__))
@@ -149,7 +151,10 @@ def _download_from_drive(folder_token, dest_dir):
                     resp = svc.files().list(
                         q=f"'{folder_id}' in parents and trashed=false",
                         fields="nextPageToken, files(id, name, mimeType)",
-                        pageToken=page_token, pageSize=100).execute()
+                        pageToken=page_token,
+                        pageSize=100,
+                        supportsAllDrives=True,
+                        includeItemsFromAllDrives=True).execute()
                     for item in resp.get("files", []):
                         mime = item["mimeType"]
                         safe_name = _sanitize_filename(item["name"])
@@ -187,15 +192,27 @@ def _download_from_drive(folder_token, dest_dir):
             if os.listdir(dest_dir):
                 print("Google Drive API (OAuth) 下载成功！", file=sys.stderr)
                 return str(dest_dir)
+            oauth_error = (
+                "Google Drive API 未下载到任何文件。"
+                "请确认该账号对目标文件夹有访问权限，且文件夹内包含可下载文件。"
+            )
         else:
             print(f"未找到 OAuth Token ({token_path})，跳过。首次使用请运行: "
                   f"python scripts/gdrive_auth.py auth --client-secret <path>", file=sys.stderr)
     except ImportError:
         print("未安装 google-api-python-client，跳过 Drive API 方式", file=sys.stderr)
     except Exception as e:
-        print(f"Google Drive API 报错: {e}", file=sys.stderr)
+        oauth_error = f"Google Drive API 报错: {e}"
+        print(oauth_error, file=sys.stderr)
 
     # ── 方式 4: gdown (兜底，不稳定) ──
+    # 默认关闭，避免反复触发“需要公开链接”的误导性报错。
+    if os.getenv("HEALTH_SYNC_ENABLE_GDOWN", "0") != "1":
+        msg = "所有稳定下载方式均失败，且已禁用 gdown 公链兜底。"
+        if oauth_error:
+            msg = f"{msg} {oauth_error}"
+        raise RuntimeError(msg)
+
     try:
         import gdown
     except ImportError:
@@ -207,6 +224,54 @@ def _download_from_drive(folder_token, dest_dir):
     print(f"正在使用 gdown 从 Google Drive 下载: {url}", file=sys.stderr)
     gdown.download_folder(url, output=str(dest_dir), quiet=True, use_cookies=False)
     return str(dest_dir)
+
+
+def _load_local_cache_json(path_obj):
+    try:
+        content = load_json(path_obj, default=None)
+        if not isinstance(content, dict):
+            return None
+        if "metrics" in content and isinstance(content.get("metrics"), dict):
+            return content
+
+        metric_keys = {
+            "cardiovascular_health",
+            "sleep_recovery",
+            "body_composition",
+            "daily_activity",
+            "energy_expenditure",
+        }
+        if metric_keys.intersection(set(content.keys())):
+            return {
+                "status": "success",
+                "metrics": content,
+                "message": f"使用本地缓存文件: {path_obj.name}",
+            }
+    except Exception:
+        return None
+    return None
+
+
+def _pick_local_cache_file(cfg, data_dir, target_date):
+    candidates = []
+    cache_file = cfg.get("local_fallback_cache_file")
+    if cache_file:
+        candidates.append(Path(cache_file))
+
+    fallback_path = cfg.get("local_fallback_path")
+    if fallback_path and Path(fallback_path).is_file():
+        candidates.append(Path(fallback_path))
+
+    dd = Path(data_dir)
+    candidates.append(dd / f"health_data_{target_date}.json")
+    candidates.append(dd / "health_data_latest.json")
+
+    for p in candidates:
+        if p.exists() and p.is_file():
+            payload = _load_local_cache_json(p)
+            if payload:
+                return payload, p
+    return None, None
 
 
 def _parse_target_date(target_date):
@@ -284,11 +349,25 @@ def _error_result(period, target_date, message):
     }
 
 
-def fetch_data(period, target_date, data_dir):
+def _find_estimated_energy_days(metrics):
+    energy = metrics.get("energy_expenditure", {}) if isinstance(metrics, dict) else {}
+    estimated_days = []
+    for day, item in energy.items():
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("active_burn_source", "")).lower()
+        method = str(item.get("active_burn_method", "")).lower()
+        if "estimated" in source or "fallback" in method:
+            estimated_days.append(day)
+    return estimated_days
+
+
+def fetch_data(period, target_date, data_dir, strict_real_data=False):
     dd = Path(data_dir)
     dd.mkdir(parents=True, exist_ok=True)
     cfg_path = dd / "external_data_config.json"
     cfg = load_json(cfg_path)
+    strict_real_data = bool(strict_real_data or cfg.get("strict_real_data", False))
 
     if "health_data_location" not in cfg:
         result = _error_result(period, target_date, "未配置外部数据位置，请先执行 set-location")
@@ -309,6 +388,8 @@ def fetch_data(period, target_date, data_dir):
 
     temp_dir = None
     extracted_dir = None
+    output_data = None
+    exit_code = 0
 
     if _is_google_drive_token(loc):
         temp_dir = tempfile.mkdtemp(prefix="health_sync_gdrive_")
@@ -322,16 +403,30 @@ def fetch_data(period, target_date, data_dir):
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 temp_dir = None
-            # 回退: 检查 config 中的 local_fallback_path 或 data_dir 同级常见位置
+            # 回退 1: 使用明确配置或默认命名的本地缓存 JSON（真实数据，不再伪造）
+            cache_payload, cache_file = _pick_local_cache_file(cfg, data_dir, target_date)
+            if cache_payload is not None:
+                output_data = {
+                    "status": "success",
+                    "period": period,
+                    "target_date": target_date,
+                    "metrics": cache_payload.get("metrics", {}),
+                    "message": f"Google Drive 下载失败，改用本地缓存文件: {cache_file}",
+                }
+                extracted_dir = None
+                exit_code = 0
+
+            # 回退 2: 检查 config 中的 local_fallback_path 目录，重新解析原始导出文件
             fallback_path = cfg.get("local_fallback_path")
-            if fallback_path and Path(fallback_path).is_dir():
+            if output_data is None and fallback_path and Path(fallback_path).is_dir():
                 extracted_dir = _find_health_data_root(fallback_path)
                 if extracted_dir:
                     print(f"已回退到本地路径: {extracted_dir}", file=sys.stderr)
-            if extracted_dir is None:
+            if output_data is None and extracted_dir is None:
                 result = _error_result(period, target_date,
                     f"从 Google Drive 下载失败: {e}。可在 external_data_config.json 中设置 "
-                    f"\"local_fallback_path\" 指向本地健康数据目录作为离线回退。")
+                    f"\"local_fallback_cache_file\" 指向本地健康缓存 JSON，或设置 "
+                    f"\"local_fallback_path\" 指向健康数据目录作为离线回退。")
                 print(json.dumps(result, ensure_ascii=False))
                 return 1
     else:
@@ -343,43 +438,58 @@ def fetch_data(period, target_date, data_dir):
         if extracted_dir is None:
             result = _error_result(period, target_date, f"在 {loc} 及其子目录中未找到包含“健康同步 *”数据文件夹的目录")
 
-    if extracted_dir is None:
+    if output_data is None and extracted_dir is None:
         print(json.dumps(result, ensure_ascii=False))
         if temp_dir and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
         return 1
 
-    try:
-        scripts_dir = os.path.dirname(os.path.abspath(__file__))
-        if scripts_dir not in sys.path:
-            sys.path.append(scripts_dir)
+    if output_data is None:
+        try:
+            scripts_dir = os.path.dirname(os.path.abspath(__file__))
+            if scripts_dir not in sys.path:
+                sys.path.append(scripts_dir)
 
-        from health_metrics_engine import generate_health_report
+            from health_metrics_engine import generate_health_report
 
-        comprehensive_report = generate_health_report(
-            extracted_dir,
-            data_dir=data_dir,
-            start_date=start_date.isoformat(),
-            end_date=end_date.isoformat(),
-        )
+            comprehensive_report = generate_health_report(
+                extracted_dir,
+                data_dir=data_dir,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                allow_estimated_energy=not strict_real_data,
+            )
 
-        output_data = {
-            "status": "success",
-            "period": period,
-            "target_date": target_date,
-            "metrics": comprehensive_report.get("metrics", {}),
-            "message": f"成功抓取并计算了 {start_date} ~ {end_date} 的健康数据",
-        }
-        exit_code = 0
-    except Exception as e:
-        output_data = _error_result(period, target_date, f"健康数据引擎运行失败: {e}")
-        exit_code = 1
-    finally:
-        # 清理临时目录
-        if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            output_data = {
+                "status": "success",
+                "period": period,
+                "target_date": target_date,
+                "metrics": comprehensive_report.get("metrics", {}),
+                "message": f"成功抓取并计算了 {start_date} ~ {end_date} 的健康数据",
+            }
+            exit_code = 0
+        except Exception as e:
+            output_data = _error_result(period, target_date, f"健康数据引擎运行失败: {e}")
+            exit_code = 1
+        finally:
+            # 清理临时目录
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+    elif temp_dir and os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     cache_path = dd / f"health_cache_{period}_{target_date}.json"
+    if output_data.get("status") == "success" and strict_real_data:
+        estimated_days = _find_estimated_energy_days(output_data.get("metrics", {}))
+        if estimated_days:
+            output_data = _error_result(
+                period,
+                target_date,
+                "strict_real_data 已启用：检测到估算能耗数据，拒绝输出。"
+                f"涉及日期: {', '.join(sorted(estimated_days))}"
+            )
+            exit_code = 1
+
     save_json(cache_path, output_data)
     print(json.dumps(output_data, ensure_ascii=False, indent=2))
     return exit_code
@@ -397,12 +507,14 @@ def main():
     p2.add_argument("--period", required=True, choices=["day", "week", "month"])
     p2.add_argument("--target-date", required=True)
     p2.add_argument("--data-dir", required=True)
+    p2.add_argument("--strict-real-data", action="store_true",
+                    help="严格真实模式：检测到估算能耗数据则报错")
 
     args = pa.parse_args()
     if args.command == "set-location":
         return set_location(args.location, args.data_dir)
     if args.command == "fetch":
-        return fetch_data(args.period, args.target_date, args.data_dir)
+        return fetch_data(args.period, args.target_date, args.data_dir, args.strict_real_data)
     pa.print_help()
     return 1
 

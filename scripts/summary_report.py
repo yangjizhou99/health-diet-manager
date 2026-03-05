@@ -22,6 +22,23 @@ def load_json(fp, default=None):
         except Exception: return default
     return default
 
+
+def _load_external_sync_config(data_dir):
+    return load_json(Path(data_dir) / "external_data_config.json", {})
+
+
+def _find_estimated_energy_days(metrics):
+    energy = metrics.get("energy_expenditure", {}) if isinstance(metrics, dict) else {}
+    days = []
+    for day, item in energy.items():
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("active_burn_source", "")).lower()
+        method = str(item.get("active_burn_method", "")).lower()
+        if "estimated" in source or "fallback" in method:
+            days.append(day)
+    return days
+
 def save_json(fp, data):
     tmp = fp.with_suffix('.tmp')
     with open(tmp,'w',encoding='utf-8') as f: json.dump(data,f,ensure_ascii=False,indent=2)
@@ -349,8 +366,10 @@ def set_schedule(frequency, time_str, data_dir):
     save_json(cfg_path, cfg)
     print(json.dumps({"status": "success", "message": f"成功设定定期汇报任务: {frequency} 周期, 触发时间 {time_str}"}, ensure_ascii=False))
 
-def generate_merged_report(data_dir, report_type, end_date_str):
+def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data=False):
     dd = Path(data_dir)
+    ext_cfg = _load_external_sync_config(data_dir)
+    strict_real_data = bool(strict_real_data or ext_cfg.get("strict_real_data", False))
     if not end_date_str:
         end_date_str = date.today().isoformat()
     end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
@@ -396,13 +415,32 @@ def generate_merged_report(data_dir, report_type, end_date_str):
             if scripts_dir not in __import__('sys').path:
                 __import__('sys').path.insert(0, scripts_dir)
             from health_data_sync import fetch_data
-            fetch_data(period_key, end_date_str, str(dd))
+            fetch_data(period_key, end_date_str, str(dd), strict_real_data=strict_real_data)
         except Exception as e:
             print(f"[Report] 自动同步失败: {e}", file=__import__('sys').stderr)
 
     if cache_path.exists():
         ext_data = load_json(cache_path)
         metrics = ext_data.get("metrics", {})
+        if strict_real_data:
+            if ext_data.get("status") != "success" or not metrics:
+                result = {
+                    "status": "error",
+                    "message": "strict_real_data 已启用：缓存状态非 success 或无有效指标，拒绝生成报告。",
+                    "cache_path": str(cache_path),
+                }
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return
+            estimated_days = _find_estimated_energy_days(metrics)
+            if estimated_days:
+                result = {
+                    "status": "error",
+                    "message": "strict_real_data 已启用：缓存中包含估算能耗数据，拒绝生成报告。",
+                    "estimated_days": sorted(estimated_days),
+                    "cache_path": str(cache_path),
+                }
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return
         
         # 1. 提取日常活动
         activity_metrics = metrics.get("daily_activity", {})
@@ -493,6 +531,14 @@ def generate_merged_report(data_dir, report_type, end_date_str):
                 )
             
     else:
+        if strict_real_data:
+            result = {
+                "status": "error",
+                "message": "strict_real_data 已启用：未检测到可用外部健康缓存，拒绝继续。",
+                "expected_cache": str(cache_path),
+            }
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
         lines.append("- 未检测到当期外部同步数据，请确保执行了 fetch 以连接健康系统。")
 
     objective_payload = build_llm_objective_payload(
@@ -550,6 +596,8 @@ def main():
     p3.add_argument("--type", required=True, choices=["daily","weekly","monthly"])
     p3.add_argument("--end-date", default=None)
     p3.add_argument("--data-dir", required=True)
+    p3.add_argument("--strict-real-data", action="store_true",
+                    help="严格真实模式：发现估算能耗或缺少外部缓存时直接报错")
 
     sp.add_parser("demo")
     args = pa.parse_args()
@@ -559,7 +607,7 @@ def main():
     elif args.command == "set-schedule":
         set_schedule(args.frequency, args.time, args.data_dir)
     elif args.command == "generate-merged":
-        generate_merged_report(args.data_dir, args.type, args.end_date)
+        generate_merged_report(args.data_dir, args.type, args.end_date, args.strict_real_data)
     elif args.command == "demo":
         cmd_demo(args)
     else:

@@ -445,7 +445,7 @@ class EnergyAnalyzer:
             return score, "medium", 0.20
         return score, "low", 0.30
 
-    def analyze(self, energy_df, hr_df, weight_df):
+    def analyze(self, energy_df, hr_df, weight_df, allow_hr_fallback=True):
         # 建立按天查询的体重字典 (默认 75kg)
         daily_weights = {}
         if not weight_df.empty:
@@ -495,7 +495,7 @@ class EnergyAnalyzer:
                 tdee = external_tdee
 
             # 【核心逻辑】：如果外部同步的活动卡路里为 0，且当天有心率数据，启用 Keytel 公式回退推算
-            if active_burn == 0 and date_str in daily_hr:
+            if allow_hr_fallback and active_burn == 0 and date_str in daily_hr:
                 weight = daily_weights.get(date_str, 75.0)  # 取当天体重，没有则用75kg
                 hr_day_df = daily_hr[date_str]
 
@@ -603,7 +603,7 @@ def _filter_date_df(df, start_date=None, end_date=None):
     return result.reset_index(drop=True)
 
 
-def generate_health_report(extracted_dir, data_dir=None, start_date=None, end_date=None):
+def generate_health_report(extracted_dir, data_dir=None, start_date=None, end_date=None, allow_estimated_energy=True):
     """引擎入口: 统筹分析并生成结构化报告 (纯数据版)"""
     print(f"[Engine] 加载数据目录: {extracted_dir}")
     parser = HealthDataParser(extracted_dir)
@@ -630,7 +630,12 @@ def generate_health_report(extracted_dir, data_dir=None, start_date=None, end_da
     sleep_report = SleepAnalyzer().analyze(sleep_df)
     body_comp_report = BodyCompositionAnalyzer(height_cm=height).analyze(weight_df)
     activity_report = ActivityAnalyzer().analyze(steps_df)
-    energy_report = EnergyAnalyzer(age=age, is_male=is_male, height=height).analyze(energy_df, hr_df, weight_df)
+    energy_report = EnergyAnalyzer(age=age, is_male=is_male, height=height).analyze(
+        energy_df,
+        hr_df,
+        weight_df,
+        allow_hr_fallback=allow_estimated_energy,
+    )
     
     comprehensive_report = {
         "analysis_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

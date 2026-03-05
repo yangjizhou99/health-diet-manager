@@ -219,9 +219,34 @@ python scripts/gdrive_auth.py download \
 | 1 | gog CLI | Google Workspace CLI (需预装: `brew install steipete/tap/gogcli`) |
 | 2 | rclone | 稳定可靠 (需预配置 `rclone config` → `gdrive` remote) |
 | 3 | **Google Drive API + OAuth** | **推荐**，最可靠。使用 `gdrive_auth.py` 生成的 Token |
-| 4 | gdown | 兜底方案，不稳定易被 Google 反爬阻止 |
+| 4 | gdown | 可选兜底（默认关闭）。仅在设置环境变量 `HEALTH_SYNC_ENABLE_GDOWN=1` 时启用 |
 
-所有方式失败时，自动回退到 `external_data_config.json` 中的 `local_fallback_path`（如已配置）。
+所有方式失败时，优先回退到 `external_data_config.json` 中的本地缓存 JSON（`local_fallback_cache_file`），其次回退到 `local_fallback_path` 指向的本地健康数据目录（如已配置）。
+
+推荐离线回退配置示例：
+
+```json
+{
+  "health_data_location": "<GoogleDriveFolderId>",
+  "local_fallback_cache_file": "data/health_data_2026-03-05.json",
+  "local_fallback_path": "D:/path/to/健康同步导出目录"
+}
+```
+
+严格真实模式（拒绝估算能耗数据）：
+
+- 在 `external_data_config.json` 设置：`"strict_real_data": true`
+- 或命令行临时启用：
+
+```bash
+python scripts/health_data_sync.py fetch \
+  --period day \
+  --target-date 2026-03-05 \
+  --data-dir <SKILL目录>/data \
+  --strict-real-data
+```
+
+启用后，如检测到 `estimated_from_hr` / `keytel_hr_fallback` 等估算能耗字段，将直接返回错误并拒绝生成缓存结果。
 
 **安全特性：**
 - Windows 文件名自动清理（替换 `<>:"/\|?*` 为 `_`）

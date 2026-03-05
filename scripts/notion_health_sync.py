@@ -39,6 +39,26 @@ def load_config(data_dir: str) -> dict:
     return {}
 
 
+def load_external_config(data_dir: str) -> dict:
+    path = Path(data_dir) / "external_data_config.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {}
+
+
+def find_estimated_energy_days(metrics: dict) -> list:
+    energy = metrics.get("energy_expenditure", {}) if isinstance(metrics, dict) else {}
+    days = []
+    for day, item in energy.items():
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("active_burn_source", "")).lower()
+        method = str(item.get("active_burn_method", "")).lower()
+        if "estimated" in source or "fallback" in method:
+            days.append(day)
+    return days
+
+
 def save_config(data_dir: str, config: dict):
     path = Path(data_dir) / CONFIG_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1848,6 +1868,8 @@ def find_matching_cache(data_dir: str, report_json: dict) -> dict:
     rtype_map = {"daily": "day", "weekly": "week", "monthly": "month"}
     period = rtype_map.get(rp.get("type", ""), "day")
     target = rp.get("end", rp.get("start", ""))
+    ext_cfg = load_external_config(data_dir)
+    strict_real_data = bool(ext_cfg.get("strict_real_data", False))
 
     if not target:
         return None
@@ -1860,11 +1882,23 @@ def find_matching_cache(data_dir: str, report_json: dict) -> dict:
             if scripts_dir not in sys.path:
                 sys.path.insert(0, scripts_dir)
             from health_data_sync import fetch_data
-            fetch_data(period, target, data_dir)
+            fetch_data(period, target, data_dir, strict_real_data=strict_real_data)
         except Exception as e:
             print(f"[Notion] 自动同步失败: {e}", file=sys.stderr)
     if cache_path.exists():
-        return json.loads(cache_path.read_text(encoding="utf-8"))
+        cache_json = json.loads(cache_path.read_text(encoding="utf-8"))
+        if strict_real_data:
+            if cache_json.get("status") != "success" or not cache_json.get("metrics"):
+                print("[Notion] strict_real_data 已启用，缓存状态非 success 或无有效指标，已拒绝使用", file=sys.stderr)
+                return None
+            estimated_days = find_estimated_energy_days(cache_json.get("metrics", {}))
+            if estimated_days:
+                print(
+                    f"[Notion] strict_real_data 已启用，缓存包含估算能耗数据: {', '.join(sorted(estimated_days))}，已拒绝使用",
+                    file=sys.stderr,
+                )
+                return None
+        return cache_json
     return None
 
 
