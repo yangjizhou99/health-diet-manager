@@ -780,13 +780,21 @@ def build_energy_section(metrics: dict, llm_input: dict = None) -> list:
 
     # 能量汇总
     tdee_list = [energy[d].get("tdee_kcal", 0) for d in dates]
+    tdee_low_list = [energy[d].get("tdee_kcal_low", energy[d].get("tdee_kcal", 0)) for d in dates]
+    tdee_high_list = [energy[d].get("tdee_kcal_high", energy[d].get("tdee_kcal", 0)) for d in dates]
     active_list = [energy[d].get("active_burn_kcal", 0) for d in dates]
+    active_low_list = [energy[d].get("active_burn_kcal_low", energy[d].get("active_burn_kcal", 0)) for d in dates]
+    active_high_list = [energy[d].get("active_burn_kcal_high", energy[d].get("active_burn_kcal", 0)) for d in dates]
     resting_list = [energy[d].get("resting_burn_kcal", 0) for d in dates]
     neat_list = [energy[d].get("neat_estimate_kcal", 0) for d in dates]
     avg_tdee = sum(tdee_list) / len(tdee_list) if tdee_list else 0
     avg_active = sum(active_list) / len(active_list) if active_list else 0
     avg_resting = sum(resting_list) / len(resting_list) if resting_list else 0
     avg_neat = sum(neat_list) / len(neat_list) if neat_list else 0
+    avg_active_low = sum(active_low_list) / len(active_low_list) if active_low_list else 0
+    avg_active_high = sum(active_high_list) / len(active_high_list) if active_high_list else 0
+    avg_tdee_low = sum(tdee_low_list) / len(tdee_low_list) if tdee_low_list else 0
+    avg_tdee_high = sum(tdee_high_list) / len(tdee_high_list) if tdee_high_list else 0
     intake = 0
     if llm_input:
         intake = llm_input.get("diet", {}).get("avg_intake_kcal", 0)
@@ -812,6 +820,19 @@ def build_energy_section(metrics: dict, llm_input: dict = None) -> list:
         inner_blocks.append(_column_list([col1, col2, col3, col4]))
     else:
         inner_blocks.append(_column_list([col1, col2, col3]))
+
+    # 心率回退估算区间与置信度（仅在存在估算天时展示）
+    estimated = [energy[d] for d in dates if energy[d].get("active_burn_source") == "estimated_from_hr"]
+    if estimated:
+        est_low = sum(e.get("active_burn_kcal_low", e.get("active_burn_kcal", 0)) for e in estimated) / len(estimated)
+        est_high = sum(e.get("active_burn_kcal_high", e.get("active_burn_kcal", 0)) for e in estimated) / len(estimated)
+        labels = [e.get("active_burn_confidence_label") for e in estimated if e.get("active_burn_confidence_label")]
+        label = "unknown" if not labels else ("low" if "low" in labels else ("medium" if "medium" in labels else "high"))
+        label_cn = {"low": "低", "medium": "中", "high": "高", "unknown": "未知"}.get(label, "未知")
+        inner_blocks.append(_callout(
+            f"⌚ 心率回退估算: {len(estimated)} 天  ·  活动消耗区间 {int(est_low):,}~{int(est_high):,} kcal/天  ·  置信度 {label_cn}",
+            icon_emoji="📡", color="yellow_background",
+        ))
 
     # BMR 公式展示 (equation block)
     if avg_resting > 0:
@@ -849,19 +870,25 @@ def build_energy_section(metrics: dict, llm_input: dict = None) -> list:
         inner_blocks.append(_callout(balance_text, icon_emoji="📊", color=v_color))
 
     # 详细表格 Toggle（含 NEAT 列）
-    headers = ["📅 日期", "🔥 TDEE", "🏃 活动消耗", "💤 基础代谢", "🧹 NEAT", "📡 数据源"]
+    headers = ["📅 日期", "🔥 TDEE", "🏃 活动消耗", "📏 区间", "💤 基础代谢", "🧹 NEAT", "📡 数据源", "🎯 置信度"]
     rows = []
     for date_str in dates:
         d = energy[date_str]
         source = d.get("active_burn_source", "unknown")
         source_label = {"estimated_from_hr": "⌚ 心率估算", "direct": "📱 设备直测"}.get(source, source)
         neat_val = d.get("neat_estimate_kcal", 0)
+        low = d.get("active_burn_kcal_low", d.get("active_burn_kcal", 0))
+        high = d.get("active_burn_kcal_high", d.get("active_burn_kcal", 0))
+        conf = d.get("active_burn_confidence_label", "unknown")
+        conf_label = {"low": "低", "medium": "中", "high": "高", "unknown": "—"}.get(conf, "—")
         rows.append([
             date_str, f"{_fmt(d.get('tdee_kcal', 0), '', 0)} kcal",
             f"{_fmt(d.get('active_burn_kcal', 0), '', 0)} kcal",
+            f"{_fmt(low, '', 0)}~{_fmt(high, '', 0)}",
             f"{_fmt(d.get('resting_burn_kcal', 0), '', 0)} kcal",
             f"{_fmt(neat_val, '', 0)} kcal" if neat_val else "—",
             source_label,
+            conf_label,
         ])
     inner_blocks.append(_toggle("📋 查看每日能量明细", [_table(headers, rows)]))
 
@@ -931,16 +958,18 @@ def build_body_composition_section(metrics: dict, llm_input: dict = None) -> lis
         ))
 
     # 详细表格
-    headers = ["📅 日期", "⚖️ 体重", "📉 体脂率", "💪 骨骼肌", "🔥 BMR", "📏 SMI"]
+    headers = ["📅 日期", "⚖️ 体重", "📉 体脂率", "💪 骨骼肌", "🔥 BMR", "📏 骨骼肌/脂肪比", "🧮 SMI(kg/m2)"]
     rows = []
     for date_str in dates:
         d = body[date_str]
+        muscle_fat_ratio = d.get("muscle_fat_ratio", d.get("smi_ratio"))
         rows.append([
             date_str, _fmt(d.get("weight_kg"), " kg"),
             f"{d.get('body_fat_pct', '—')}%" if d.get("body_fat_pct") else "—",
             _fmt(d.get("skeletal_muscle_kg"), " kg"),
             _fmt(d.get("bmr_kcal"), " kcal", 0),
-            _fmt(d.get("smi_ratio")),
+            _fmt(muscle_fat_ratio),
+            _fmt(d.get("smi_kg_m2")),
         ])
     inner_blocks.append(_table(headers, rows))
 
@@ -1283,9 +1312,15 @@ def build_daily_energy(metrics: dict, llm_input: dict) -> list:
     latest_date = sorted(energy.keys())[-1]
     e = energy[latest_date]
     tdee = e.get("tdee_kcal", 0)
+    tdee_low = e.get("tdee_kcal_low", tdee)
+    tdee_high = e.get("tdee_kcal_high", tdee)
     active = e.get("active_burn_kcal", 0)
+    active_low = e.get("active_burn_kcal_low", active)
+    active_high = e.get("active_burn_kcal_high", active)
     resting = e.get("resting_burn_kcal", 0)
     neat = e.get("neat_estimate_kcal", 0)
+    confidence = e.get("active_burn_confidence_label", "unknown")
+    confidence_cn = {"low": "低", "medium": "中", "high": "高", "unknown": "未知"}.get(confidence, "未知")
     intake = llm_input.get("diet", {}).get("avg_intake_kcal", 0)
 
     # 能量分解卡片
@@ -1299,6 +1334,13 @@ def build_daily_energy(metrics: dict, llm_input: dict) -> list:
         cols.append([_metric_card("🧹", "NEAT", f"{int(neat):,} kcal",
                                   "非运动消耗", "green_background")])
     inner.append(_column_list(cols))
+
+    if e.get("active_burn_source") == "estimated_from_hr":
+        inner.append(_callout(
+            f"⌚ 心率回退估算区间: 活动 {int(active_low):,}~{int(active_high):,} kcal  ·  "
+            f"TDEE {int(tdee_low):,}~{int(tdee_high):,} kcal  ·  置信度 {confidence_cn}",
+            icon_emoji="📡", color="yellow_background"
+        ))
 
     # 收支平衡
     if intake and tdee:
@@ -1811,6 +1853,16 @@ def find_matching_cache(data_dir: str, report_json: dict) -> dict:
         return None
 
     cache_path = Path(data_dir) / f"health_cache_{period}_{target}.json"
+    if not cache_path.exists() and target:
+        print(f"[Notion] 缓存 {cache_path.name} 不存在，尝试自动同步...", file=sys.stderr)
+        try:
+            scripts_dir = str(Path(__file__).resolve().parent)
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from health_data_sync import fetch_data
+            fetch_data(period, target, data_dir)
+        except Exception as e:
+            print(f"[Notion] 自动同步失败: {e}", file=sys.stderr)
     if cache_path.exists():
         return json.loads(cache_path.read_text(encoding="utf-8"))
     return None

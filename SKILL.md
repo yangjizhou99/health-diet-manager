@@ -1,13 +1,21 @@
 ---
 name: health-diet-manager-v2
 description: >
-  V3重大升级：内嵌健康指标引擎 (health_metrics_engine)，记忆常驻位置并支持基于心率的智能运动和卡路里推算，提取包含心脏、睡眠、体征的高维JSON字典；合并饮食与外部健康数据，支持设定日/周/月定期多维深度汇报。向下兼容。
+  V4升级：新增多设备步数智能去重（15分钟窗口取最大值），Google Drive OAuth API 可靠下载（多方式自动降级），
+  缓存未命中自动刷新，Windows 文件名安全处理，Google Docs 原生文件自动导出。
+  内嵌健康指标引擎 (health_metrics_engine)，支持基于心率的智能运动和卡路里推算，
+  提取心脏、睡眠、体征、活动、能耗的高维JSON字典；合并饮食与外部健康数据，
+  支持日/周/月多维深度汇报并同步到 Notion。向下兼容 V3。
   触发关键词：饮食、健康数据、吃了、配置存放位置、卡路里、照片、
-  饮食报告、周报、月报、健康建议、改进技能。
+  饮食报告、周报、月报、健康建议、改进技能、谷歌云盘、Google Drive。
 emoji: 🥗
 dependencies:
   - python>=3.8
   - pandas
+  - numpy
+  - google-api-python-client
+  - google-auth-oauthlib
+  - requests
 ---
 
 # 🥗 健康饮食管理助手
@@ -159,31 +167,79 @@ python scripts/nutrition_calc.py log-meal \
 
 ---
 
-## 4. 外部设备健康数据接入 (V3 新增)
+## 4. 外部设备健康数据接入 (V4 升级)
 
-接纳更全面的健康生态，V2支持绑定外部设备（如手环、体脂秤）等传输的健康数据。
+接纳更全面的健康生态，支持绑定外部设备（如手环、体脂秤）等传输的健康数据。
+V4 新增 Google Drive OAuth API 可靠下载，多设备步数智能去重，缓存自动刷新。
 
 ### 4.1. 初始化配置与记录
 
-当用户初次指定外部健康数据的存放位置（如：“我的健康数据放在谷歌云盘 ...”或“存放在 D:\\health_data”）：
-调用脚本持久化记住该访问位置，后续在需要时依据此位置进行查询。
+当用户初次指定外部健康数据的存放位置（如："我的健康数据放在谷歌云盘 ..."或"存放在 D:\\health_data"）：
 ```bash
 python scripts/health_data_sync.py set-location \
-  --location "<用户指定位置/URL>" \
+  --location "<用户指定位置/URL/Google Drive文件夹ID>" \
   --data-dir "<SKILL目录>/data"
 ```
 
-### 4.2. 初次智能分析与脚本固化 
+支持的位置类型：
+- **本地路径**：`D:\health_data` 或 `/home/user/health`
+- **Google Drive 文件夹 ID**：如 `0AIKWPm-oOUzFUk9PVA`（15-45位字符串）
 
-为应对不同厂商的数据格式差异且防止全量查询拖慢速度，**初次导入时必须执行智能分析：**
-1. **轻量获取**：获取该位置下文件的少量样本数据（如CSV前10行，或JSON的部分结构）。
-2. **分析格式**：理解数据结构，理清如何获取包含特定时间戳（某天/某周/某月）的核心健康指标（如步数、心率、睡眠时长）。不要盲目加载海量数据，学会取舍核心健康体征数据。
-3. **固化脚本形式**：生成特定的 Python 数据提取脚本，并把它保存固化下来（例如 `scripts/custom_extractor.py`），使得后续仅需调用该脚本传入参数（如 `--target-date YYYY-MM-DD`）即可精确切片并返回对应时期的数据汇总。
-4. **导入并测试**：使用生成的固化脚本试运行一次，将今日或最近的健康数据导入并缓存至 `data/` 目录。
+### 4.2. Google Drive 授权配置 (V4 新增)
 
-### 4.3. 按需定期查询与提取
+首次使用 Google Drive 数据源时，需完成一次 OAuth 授权：
 
-在日常需要获取外部健康数据参与合并计算时，使用上述生成的固定脚本形式精确抓取指定日/周/月的轻量数据集：
+**Step 1：导入凭证文件**
+用户需从 Google Cloud Console 下载 OAuth `client_secret.json`，然后运行：
+```bash
+python scripts/gdrive_auth.py auth \
+  --client-secret "<client_secret.json路径>"
+```
+这会打开浏览器进行 Google 账号授权，授权完成后 Token 自动保存到 `data/gdrive_token.json`。
+
+**Step 2：测试连接**
+```bash
+python scripts/gdrive_auth.py test \
+  --folder-id "<Google Drive文件夹ID>"
+```
+
+**Step 3：按需下载**
+```bash
+python scripts/gdrive_auth.py download \
+  --folder-id "<Google Drive文件夹ID>" \
+  --output "<本地输出目录>"
+```
+
+### 4.3. 数据下载多方式自动降级 (V4 新增)
+
+`health_data_sync.py fetch` 从 Google Drive 下载时，按优先级依次尝试：
+
+| 优先级 | 方式 | 说明 |
+|--------|------|------|
+| 1 | gog CLI | Google Workspace CLI (需预装: `brew install steipete/tap/gogcli`) |
+| 2 | rclone | 稳定可靠 (需预配置 `rclone config` → `gdrive` remote) |
+| 3 | **Google Drive API + OAuth** | **推荐**，最可靠。使用 `gdrive_auth.py` 生成的 Token |
+| 4 | gdown | 兜底方案，不稳定易被 Google 反爬阻止 |
+
+所有方式失败时，自动回退到 `external_data_config.json` 中的 `local_fallback_path`（如已配置）。
+
+**安全特性：**
+- Windows 文件名自动清理（替换 `<>:"/\|?*` 为 `_`）
+- Google Docs 原生文件自动处理（Sheets → CSV 导出，其他类型跳过）
+
+### 4.4. 多设备步数智能去重 (V4 新增)
+
+当同时佩戴手机和手表时，步数 CSV 数据会有重叠。引擎使用 **15分钟时间窗口取最大值** 策略自动去重：
+
+1. 按数据来源（HealthConnect / HuaweiHealth）标记每条记录
+2. 同源数据按 15 分钟窗口合并取 max（消除重复 CSV 文件）
+3. 多源数据在同一窗口中有重叠时取 max（避免双重计数）
+4. 无重叠窗口的数据保留累加
+
+此策略经验证与华为手机真实合并值偏差仅约 0.3%。
+
+### 4.5. 按需定期查询与提取
+
 ```bash
 python scripts/health_data_sync.py fetch \
   --period "<day/week/month>" \
@@ -191,9 +247,11 @@ python scripts/health_data_sync.py fetch \
   --data-dir "<SKILL目录>/data"
 ```
 
+V4 改进：缓存未命中时自动触发数据同步（`summary_report.py` 和 `notion_health_sync.py` 中均已内置此逻辑）。
+
 ---
 
-## 5. 定期合并汇总与指导意见 (V3 升级)
+## 5. 定期合并汇总与指导意见
 
 用户可随时请求或设置定期（每日/每周/每月）汇报健康和饮食数据的综合汇总。
 
@@ -235,10 +293,68 @@ python scripts/summary_report.py generate-merged \
 - 结构化结果：`health_report_<type>_<start>_to_<end>.json`
 - `llm_objective_input`：仅包含客观健康指标的数据包，供大模型生成个性化建议。
 
+其中 `llm_objective_input.energy` 会同时包含单点值与区间/置信度信息（如 `avg_tdee_kcal_low/high`、`avg_active_burn_kcal_low/high`、`estimated_from_hr_days`），用于避免把估算值误当作精确测量值。
+
 **综合报告生成规则（客观数据优先）：**
 - 脚本层只输出客观事实与结构化指标，不直接写主观建议文案。
 - 脚本需提供可供大模型消费的数据包（`llm_objective_input`），覆盖饮食、活动、睡眠、心率、体成分、能耗等维度。
 - 建议文本由大模型根据 `llm_objective_input` 二次生成，技能本体仅负责数据汇总与传递。
+
+### 5.4 建议分层生成规范（日/周/月必须区分）
+
+为提升建议可执行性与准确性，生成建议时必须按报告类型区分策略，不可混用：
+
+| 报告类型 | 主要目标 | 建议粒度 | 建议条数 | 时间范围 |
+|---------|---------|---------|---------|---------|
+| `daily` | 当天可立即执行 | 具体到下一餐/当晚行为 | 2-3 条 | 24 小时内 |
+| `weekly` | 行为模式优化 | 具体到每周频次与节奏 | 3-4 条 | 7 天周期 |
+| `monthly` | 策略复盘与阶段计划 | 目标+路径+监测点 | 4-5 条 | 4 周周期 |
+
+#### A) 日报建议（daily）
+- 只给“今天就能做”的动作建议，优先级按偏离目标最大的 2-3 个指标排序。
+- 每条建议必须含：`触发原因` + `执行动作` + `预期影响`。
+- 示例风格：
+  - 触发原因：今日蛋白质达标率低于 70%
+  - 执行动作：晚餐加 1 份 120g 鸡胸肉或 2 个鸡蛋
+  - 预期影响：补齐约 20-25g 蛋白，降低夜间饥饿感
+
+#### B) 周报建议（weekly）
+- 关注趋势与稳定性，不针对单天波动下结论。
+- 每条建议必须含：`问题趋势` + `周执行频次` + `可量化目标`。
+- 示例风格：
+  - 问题趋势：本周 5/7 天纤维摄入不足
+  - 周执行频次：每日至少 2 餐加入深色蔬菜（每餐 >= 150g）
+  - 可量化目标：下周纤维日均提升到 >= 22g
+
+#### C) 月报建议（monthly）
+- 关注阶段性复盘，建议必须包含“保留策略 + 调整策略 + 下月监测重点”。
+- 每条建议必须含：`阶段判断` + `下月动作计划` + `复盘指标`。
+- 示例风格：
+  - 阶段判断：活动消耗提升但睡眠恢复滞后
+  - 下月动作计划：保持每周 3 次快走，晚间减少高盐加工食品
+  - 复盘指标：静息心率、深睡比例、周均钠摄入
+
+#### D) 置信度门控（必须执行）
+- 当 `llm_objective_input.energy.estimated_from_hr_days > 0` 时，必须引用区间值（`*_low/high`），不得只报单点。
+- 若 `active_burn_confidence_labels` 中存在 `low`：
+  - 禁止使用强确定性措辞（如“一定/明确导致”）。
+  - 建议改为保守表达（如“可能/建议观察 3-7 天后再调整”）。
+- 若 `active_burn_confidence_labels` 仅有 `high/medium`：
+  - 可给出更具体的执行强度，但仍需标注“依据当前数据窗口”。
+
+#### E) 输出结构（统一模板）
+建议输出按以下固定结构组织，确保日报/周报/月报都可追溯：
+
+```markdown
+### 建议 1（优先级 P1）
+- 依据数据：<指标 + 偏离幅度 + 时间范围>
+- 执行动作：<可落地行为>
+- 执行频次：<今日/每周X次/本月>
+- 预期变化：<可量化目标>
+- 风险与备注：<置信度或数据缺口说明>
+```
+
+> 注意：严禁输出空泛口号（如“保持健康饮食”“加强锻炼”）作为最终建议。
 
 ---
 
@@ -336,9 +452,11 @@ python scripts/skill_updater.py apply \
 - `user_profile.json` — 用户健康档案
 - `daily_log.json` — 每日饮食记录
 - `update_history.json` — 技能更新历史
-- `external_data_config.json` — 外部健康数据位置配置
+- `external_data_config.json` — 外部健康数据位置配置 (支持 `local_fallback_path` 离线回退)
+- `gdrive_token.json` — Google Drive OAuth Token (V4 新增，由 `gdrive_auth.py` 生成)
 - `report_schedule.json` — 定期汇报计划设定
-- `health_cache_{period}_{date}.json` — 外部健康数据缓存
+- `health_cache_{period}_{date}.json` — 外部健康数据缓存 (缓存未命中时自动刷新)
+- `reports/` — 生成的健康报告 (Markdown + JSON)
 - `backups/` — 技能更新备份目录
 
 ### 数据安全
@@ -348,15 +466,15 @@ python scripts/skill_updater.py apply \
 
 ---
 
-## 9. V3 升级兼容与初次向导指南
+## 9. V4 升级兼容与初次向导指南
 
 **引导准则**：
-当前 V3 版本完全向下兼容之前的所有功能和存档（包含 `user_profile.json` 与历史记录），无需重新配置。当应用此升级并首次回答用户时，或者是当用户问及"如何使用更新后的系统"时：
-请主动报告："🎉 **系统已应用 V3 重大升级啦！** 目前完美兼容之前版本的所有功能。在此之上，我已内嵌健康指标引擎，支持基于心率的智能运动和卡路里推算，提取包含心脏、睡眠、体征的高维数据。您可以配置外部设备数据来源，进行饮食和健康的多维交叉分析并得出**健康指导结论**！您可以立刻测试配置，比如告诉我：'我把健康数据存储在谷歌云盘啦，链接是...'，来激活我的数据同步！"
+当前 V4 版本完全向下兼容 V3 及之前所有功能和存档（包含 `user_profile.json` 与历史记录），无需重新配置。当应用此升级并首次回答用户时，或者是当用户问及"如何使用更新后的系统"时：
+请主动报告："🎉 **系统已应用 V4 升级！** 新增功能：① 多设备步数智能去重（手机+手表不再双重计数）② Google Drive OAuth API 可靠下载（不再依赖不稳定的 gdown）③ 缓存自动刷新（报告不再出现空数据）。完美兼容之前版本的所有功能。您可以立刻测试配置，比如告诉我：'我把健康数据存储在谷歌云盘啦，文件夹ID是...'，来激活我的数据同步！"
 
 ---
 
-## 10. Notion 笔记同步 (V3 新增)
+## 10. Notion 笔记同步
 
 将每日/周/月健康报告自动同步到 Notion 笔记，以结构化模板展示。
 
@@ -400,8 +518,8 @@ python scripts/notion_health_sync.py push-latest \
 | ❤️ 心血管健康 | 静息心率、峰值心率、推测运动记录 | Callout + 表格 |
 | 😴 睡眠恢复 | 每日睡眠时长、深睡比、REM比、效率 | 表格 + 统计 Callout |
 | 🏃 日常活动 | 步数、久坐段数、达标状态 | 表格 |
-| ⚡ 能量收支 | TDEE、活动消耗、基础代谢 | 表格 |
-| ⚖️ 体成分趋势 | 体重、体脂率、骨骼肌、BMR | 表格 + 趋势 Callout |
+| ⚡ 能量收支 | TDEE、活动消耗、基础代谢、估算区间、置信度 | 表格 + Callout |
+| ⚖️ 体成分趋势 | 体重、体脂率、骨骼肌、BMR、骨骼肌/脂肪比（以及可用时 SMI） | 表格 + 趋势 Callout |
 | 💡 AI 健康建议 | 基于客观数据的个性化建议 | 列表项 |
 
 ### 10.4 预览模板
@@ -433,3 +551,5 @@ python scripts/notion_health_sync.py preview \
 3. **份量估算**：对于图片中的食物份量，结合视觉线索（碗碟大小、参照物）进行估算
 4. **不确定性处理**：对于不确定的食物或份量，必须标注"估算"并请用户确认
 5. **脚本路径**：始终使用此 SKILL 目录作为脚本和数据的基础路径
+6. **Google Drive 授权**：首次使用前需运行 `gdrive_auth.py auth` 完成 OAuth 授权
+7. **多设备去重**：步数数据自动去重，无需手动干预

@@ -32,31 +32,79 @@ def save_json(fp, data):
 
 ACTIVITY_MULT = {"久坐":1.2,"sedentary":1.2,"轻度活动":1.375,"light":1.375,
     "中度活动":1.55,"moderate":1.55,"重度活动":1.725,"heavy":1.725}
-GOAL_ADJ = {"减脂":-500,"lose_fat":-500,"慢速减脂":-300,"增肌":300,
-    "build_muscle":300,"维持体重":0,"maintain":0,"均衡营养":0,"balanced":0}
-MACRO_R = {
-    "减脂":{"p":0.30,"c":0.40,"f":0.30},"lose_fat":{"p":0.30,"c":0.40,"f":0.30},
-    "增肌":{"p":0.30,"c":0.50,"f":0.20},"build_muscle":{"p":0.30,"c":0.50,"f":0.20},
-    "维持体重":{"p":0.20,"c":0.55,"f":0.25},"maintain":{"p":0.20,"c":0.55,"f":0.25},
-    "均衡营养":{"p":0.20,"c":0.55,"f":0.25},"balanced":{"p":0.20,"c":0.55,"f":0.25},
-    "慢速减脂":{"p":0.25,"c":0.45,"f":0.30},
-}
+
+def normalize_goal(goal):
+    g = (goal or "").strip()
+    mapping = {
+        "lose_fat": "减脂", "慢速减脂": "慢速减脂", "减脂": "减脂",
+        "build_muscle": "增肌", "增肌": "增肌",
+        "maintain": "维持体重", "balanced": "维持体重", "维持体重": "维持体重", "均衡营养": "维持体重",
+    }
+    return mapping.get(g, "维持体重")
+
+
+def _energy_ratio_by_goal(goal, weight, activity):
+    g = normalize_goal(goal)
+    low_activity = activity in ("久坐", "sedentary", "轻度活动", "light")
+
+    if g == "减脂":
+        if weight < 60: return -0.10
+        if weight < 80: return -0.13
+        return -0.16
+    if g == "慢速减脂":
+        if weight < 60: return -0.07
+        if weight < 80: return -0.09
+        return -0.11
+    if g == "增肌":
+        return 0.08 if low_activity else 0.12
+    return 0.0
+
+
+def _macro_targets_by_goal(goal, weight):
+    g = normalize_goal(goal)
+    if g in ("减脂", "慢速减脂"):
+        return {"protein_g_per_kg": 1.8, "fat_g_per_kg_min": 0.8, "carb_g_per_kg_min": 2.0}
+    if g == "增肌":
+        return {"protein_g_per_kg": 1.8, "fat_g_per_kg_min": 0.7, "carb_g_per_kg_min": 3.0}
+    return {"protein_g_per_kg": 1.4, "fat_g_per_kg_min": 0.8, "carb_g_per_kg_min": 2.5}
 
 def calc_bmr(gender,age,h,w):
     return 10*w+6.25*h-5*age+(5 if gender in("男","male","m") else -161)
 
 def calc_tdee(bmr,act): return bmr*ACTIVITY_MULT.get(act,1.375)
 
-def calc_targets(tdee,goal):
-    cal=max(1200,tdee+GOAL_ADJ.get(goal,0))
-    r=MACRO_R.get(goal,MACRO_R["均衡营养"])
-    return{"calories":round(cal),"protein":round(cal*r["p"]/4),"carbs":round(cal*r["c"]/4),
-           "fat":round(cal*r["f"]/9),"fiber":25,"sodium":2300}
+def calc_targets(tdee, goal, weight, bmr, activity):
+    ratio = _energy_ratio_by_goal(goal, weight, activity)
+    # 采用按个体规模调整的热量策略，并遵循不低于 BMR 的安全约束。
+    raw_cal = tdee * (1 + ratio)
+    cal = max(bmr, raw_cal)
+
+    macro = _macro_targets_by_goal(goal, weight)
+    protein = weight * macro["protein_g_per_kg"]
+    fat = max(weight * macro["fat_g_per_kg_min"], (cal * 0.22) / 9)
+    carbs = (cal - protein * 4 - fat * 9) / 4
+
+    if carbs < macro["carb_g_per_kg_min"] * weight:
+        carbs = macro["carb_g_per_kg_min"] * weight
+        fat = max(weight * 0.6, (cal - protein * 4 - carbs * 4) / 9)
+
+    if fat < weight * 0.6:
+        fat = weight * 0.6
+        carbs = max(0, (cal - protein * 4 - fat * 9) / 4)
+
+    return {
+        "calories": round(cal),
+        "protein": round(max(0, protein)),
+        "carbs": round(max(0, carbs)),
+        "fat": round(max(0, fat)),
+        "fiber": 25,
+        "sodium": 2300,
+    }
 
 def cmd_init_profile(a):
     dd=ensure_data_dir(a.data_dir); pp=dd/"user_profile.json"
     bmr=calc_bmr(a.gender,a.age,a.height,a.weight)
-    tdee=calc_tdee(bmr,a.activity); tgt=calc_targets(tdee,a.goal)
+    tdee=calc_tdee(bmr,a.activity); tgt=calc_targets(tdee,a.goal,a.weight,bmr,a.activity)
     prof={"gender":a.gender,"age":a.age,"height":a.height,"weight":a.weight,
           "activity":a.activity,"goal":a.goal,"bmr":round(bmr),"tdee":round(tdee),
           "daily_targets":tgt,"created_at":datetime.now().isoformat(),
@@ -139,7 +187,7 @@ def cmd_update_weight(a):
     if not p: print(json.dumps({"status":"error","message":"档案不存在"},ensure_ascii=False)); sys.exit(1)
     old=p.get("weight",0); p["weight"]=a.weight
     bmr=calc_bmr(p["gender"],p["age"],p["height"],a.weight)
-    tdee=calc_tdee(bmr,p["activity"]); tgt=calc_targets(tdee,p["goal"])
+    tdee=calc_tdee(bmr,p["activity"]); tgt=calc_targets(tdee,p["goal"],a.weight,bmr,p["activity"])
     p.update({"bmr":round(bmr),"tdee":round(tdee),"daily_targets":tgt,"updated_at":datetime.now().isoformat()})
     p.setdefault("weight_history",[]).append({"date":date.today().isoformat(),"weight":a.weight})
     save_json(pp,p)
@@ -170,7 +218,7 @@ def cmd_show_profile(a):
 
 def cmd_test(a):
     print("自检测试")
-    bmr=calc_bmr("男",30,175,70); tdee=calc_tdee(bmr,"轻度活动"); tgt=calc_targets(tdee,"减脂")
+    bmr=calc_bmr("男",30,175,70); tdee=calc_tdee(bmr,"轻度活动"); tgt=calc_targets(tdee,"减脂",70,bmr,"轻度活动")
     print(f"  BMR:{round(bmr)}kcal TDEE:{round(tdee)}kcal 目标:{tgt['calories']}kcal")
     print(f"  蛋白质:{tgt['protein']}g 碳水:{tgt['carbs']}g 脂肪:{tgt['fat']}g")
     assert tgt["calories"]>1200,"热量计算异常"

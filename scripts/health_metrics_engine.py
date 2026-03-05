@@ -77,7 +77,7 @@ class HealthDataParser:
         return df_all.sort_values('Datetime').reset_index(drop=True)
 
     def load_steps(self):
-        """加载步数数据"""
+        """加载步数数据，标记数据来源用于多设备去重"""
         steps_dir = os.path.join(self.base_dir, "健康同步 步数")
         files = glob.glob(os.path.join(steps_dir, "*.csv"))
         df_list = []
@@ -88,7 +88,16 @@ class HealthDataParser:
                     date_time_str = df['日期'].astype(str).str.split(' ').str[0] + ' ' + df['时间'].astype(str)
                     df['Datetime'] = pd.to_datetime(date_time_str, format='%Y.%m.%d %H:%M:%S', errors='coerce')
                     df = df.dropna(subset=['Datetime', '步数'])
-                    df_list.append(df[["Datetime", "步数"]])
+                    # 从文件名提取来源标识 (如 "Huawei Health", "Health Connect")
+                    fname = os.path.basename(f)
+                    if 'Health Connect' in fname:
+                        source = 'HealthConnect'
+                    elif 'Huawei Health' in fname:
+                        source = 'HuaweiHealth'
+                    else:
+                        source = fname
+                    df['source'] = source
+                    df_list.append(df[["Datetime", "步数", "source"]])
             except Exception as e:
                 print(f"[Engine WARN] 加载步数文件失败 {f}: {e}", file=sys.stderr)
         if not df_list:
@@ -243,6 +252,9 @@ class SleepAnalyzer:
 
 class BodyCompositionAnalyzer:
     """体重成分纯数据计算"""
+    def __init__(self, height_cm=None):
+        self.height_m = (float(height_cm) / 100.0) if height_cm else None
+
     def analyze(self, weight_df):
         if weight_df.empty:
             return {"error": "无体脂数据"}
@@ -257,23 +269,67 @@ class BodyCompositionAnalyzer:
                 skeletal_muscle = float(latest_record.get('骨骼肌质量', 0))
                 bmr = float(latest_record.get('基础代谢率', 0))
                 
-                # SMI 指数近似 (骨骼肌/体脂肪量)
+                # 骨骼肌/脂肪比：用于趋势参考，不等同于医学定义的 SMI。
                 fat_mass = weight * (body_fat_pct / 100)
-                smi_index = round(skeletal_muscle / fat_mass, 2) if fat_mass > 0 else 0
+                muscle_fat_ratio = round(skeletal_muscle / fat_mass, 2) if fat_mass > 0 else 0
+
+                # 真实 SMI 需要四肢骨骼肌量(ASM)与身高，缺失时不输出数值。
+                asm = latest_record.get('四肢骨骼肌量', latest_record.get('四肢骨骼肌', None))
+                smi_kg_m2 = None
+                if asm is not None and self.height_m and self.height_m > 0:
+                    try:
+                        smi_kg_m2 = round(float(asm) / (self.height_m ** 2), 2)
+                    except Exception:
+                        smi_kg_m2 = None
                 
                 reports[str(date)] = {
                     "weight_kg": round(weight, 2),
                     "body_fat_pct": round(body_fat_pct, 1),
                     "skeletal_muscle_kg": round(skeletal_muscle, 2),
                     "bmr_kcal": round(bmr, 0),
-                    "smi_ratio": smi_index
+                    "muscle_fat_ratio": muscle_fat_ratio,
+                    "smi_kg_m2": smi_kg_m2,
+                    # 兼容历史字段，后续展示层不再将该字段标注为 SMI。
+                    "smi_ratio": muscle_fat_ratio,
                 }
             except Exception as e:
                 pass
         return reports
 
 class ActivityAnalyzer:
-    """日常步数分布数据计算"""
+    """日常步数分布数据计算 (支持多设备15分钟窗口去重)"""
+
+    @staticmethod
+    def _dedup_steps(group):
+        """多设备步数去重: 按15分钟窗口, 重叠取max, 非重叠直接保留"""
+        has_source = 'source' in group.columns
+        sources = group['source'].unique() if has_source else []
+        if not has_source or len(sources) <= 1:
+            return int(group['步数'].sum())
+
+        # 按来源分别 resample 到 15 分钟窗口求和
+        # 先对同源数据按时间戳去重 (处理重复CSV文件), 保留较大值
+        per_source = {}
+        for src in sources:
+            src_data = group[group['source'] == src][['Datetime', '步数']]
+            src_data = src_data.groupby('Datetime')['步数'].max()
+            per_source[src] = src_data.resample('15min').sum()
+
+        # 对齐所有来源到相同的时间索引
+        all_idx = per_source[sources[0]].index
+        for src in sources[1:]:
+            all_idx = all_idx.union(per_source[src].index)
+
+        aligned = {src: s.reindex(all_idx, fill_value=0) for src, s in per_source.items()}
+        merged = pd.DataFrame(aligned)
+
+        # 每个窗口: 多源有数据取 max, 单源直接用
+        total = 0
+        for _, row in merged.iterrows():
+            vals = [v for v in row if v > 0]
+            total += max(vals) if vals else 0
+        return int(total)
+
     def analyze(self, steps_df):
         if steps_df.empty:
             return {"error": "无步数数据"}
@@ -281,7 +337,7 @@ class ActivityAnalyzer:
         steps_df['Date'] = steps_df['Datetime'].dt.date
         reports = {}
         for date, group in steps_df.groupby('Date'):
-            total_steps = int(group['步数'].sum())
+            total_steps = self._dedup_steps(group)
             
             # 计算久坐中断 (连续3小时步数 < 100)
             group_dt = group.set_index('Datetime')
@@ -343,6 +399,52 @@ class EnergyAnalyzer:
         self.height = height
         self.gender_factor = 1 if is_male else 0
 
+    def _estimate_active_from_hr(self, hr_day_df, weight):
+        """基于分钟级心率积分估计活动消耗，并返回数据质量指标。"""
+        hr_resampled = hr_day_df.set_index('Datetime')[['心率']].resample('1min').mean().ffill(limit=5)
+        active_hr_pts = hr_resampled[hr_resampled['心率'] > 90]
+
+        estimated_active_kcals = 0.0
+        if not active_hr_pts.empty:
+            for hr in active_hr_pts['心率']:
+                if self.gender_factor == 1:
+                    cal_per_min = (-55.0969 + (0.6309 * hr) + (0.1988 * weight) + (0.2017 * self.age)) / 4.184
+                else:
+                    cal_per_min = (-20.4022 + (0.4472 * hr) - (0.1263 * weight) + (0.074 * self.age)) / 4.184
+                if cal_per_min > 0:
+                    estimated_active_kcals += cal_per_min
+
+        return {
+            "active_burn_kcal": round(estimated_active_kcals, 1),
+            "minutes_total": int(len(hr_resampled)),
+            "minutes_active": int(len(active_hr_pts)),
+        }
+
+    @staticmethod
+    def _confidence_from_quality(minutes_total, minutes_active, has_weight):
+        score = 0.45
+        if minutes_total >= 720:
+            score += 0.25
+        elif minutes_total >= 360:
+            score += 0.15
+        elif minutes_total >= 180:
+            score += 0.05
+
+        if minutes_active >= 30:
+            score += 0.20
+        elif minutes_active >= 10:
+            score += 0.10
+
+        if has_weight:
+            score += 0.10
+
+        score = max(0.0, min(0.99, score))
+        if score >= 0.80:
+            return score, "high", 0.12
+        if score >= 0.60:
+            return score, "medium", 0.20
+        return score, "low", 0.30
+
     def analyze(self, energy_df, hr_df, weight_df):
         # 建立按天查询的体重字典 (默认 75kg)
         daily_weights = {}
@@ -374,6 +476,14 @@ class EnergyAnalyzer:
             tdee = 0.0
             source_active = "external"
             external_tdee = None  # 保留外部设备提供的原始 TDEE
+            method = "external_device"
+            confidence_score = 0.95
+            confidence_label = "high"
+            assumptions = []
+            active_burn_low = 0.0
+            active_burn_high = 0.0
+            tdee_low = 0.0
+            tdee_high = 0.0
             
             # 首先尝试从 external energy df 读取
             if not energy_df.empty and date_str in energy_df['Date'].astype(str).values:
@@ -388,29 +498,21 @@ class EnergyAnalyzer:
             if active_burn == 0 and date_str in daily_hr:
                 weight = daily_weights.get(date_str, 75.0)  # 取当天体重，没有则用75kg
                 hr_day_df = daily_hr[date_str]
-                
-                # 设置静息判定线 (Zone 1 的上限附近，例如 90bpm)，只有高于此才算“活动”
-                # 或者严格一点基于 Keytel 积分:
-                estimated_active_kcals = 0.0
-                
-                # 需要用到心率差值，考虑到原始数据可能很密集或稀疏，先以分钟为单位重采样
-                hr_resampled = hr_day_df.set_index('Datetime')[['心率']].resample('1min').mean().ffill(limit=5)
-                active_hr_pts = hr_resampled[hr_resampled['心率'] > 90]
-                
-                if not active_hr_pts.empty:
-                    # 分别计算每个分钟级心率点的卡路里消耗率，然后加总
-                    # 按照 Keytel 公式估测能量:
-                    for hr in active_hr_pts['心率']:
-                        if self.gender_factor == 1:
-                            cal_per_min = (-55.0969 + (0.6309 * hr) + (0.1988 * weight) + (0.2017 * self.age)) / 4.184
-                        else:
-                            cal_per_min = (-20.4022 + (0.4472 * hr) - (0.1263 * weight) + (0.074 * self.age)) / 4.184
-                            
-                        if cal_per_min > 0:
-                            estimated_active_kcals += cal_per_min
-                            
-                active_burn = round(estimated_active_kcals, 1)
+
+                estimation = self._estimate_active_from_hr(hr_day_df, weight)
+                active_burn = estimation["active_burn_kcal"]
                 source_active = "estimated_from_hr"
+                method = "keytel_hr_fallback"
+                has_weight = date_str in daily_weights
+                confidence_score, confidence_label, span_ratio = self._confidence_from_quality(
+                    estimation["minutes_total"], estimation["minutes_active"], has_weight
+                )
+
+                assumptions = [
+                    "仅将心率>90bpm分钟计为活动积分",
+                    "分钟级重采样并前向填充最多5分钟",
+                    "当日体重缺失时采用75kg默认体重",
+                ]
                 
                 # 如果没有 external resting_burn， 用 Mifflin-St Jeor 估算基础代谢
                 if resting_burn == 0:
@@ -421,14 +523,32 @@ class EnergyAnalyzer:
                 
                 tdee = active_burn + resting_burn
 
+                active_burn_low = round(max(0.0, active_burn * (1 - span_ratio)), 1)
+                active_burn_high = round(active_burn * (1 + span_ratio), 1)
+                tdee_low = round(max(0.0, resting_burn + active_burn_low), 1)
+                tdee_high = round(resting_burn + active_burn_high, 1)
+            else:
+                active_burn_low = round(active_burn, 1)
+                active_burn_high = round(active_burn, 1)
+                tdee_low = round(tdee, 1)
+                tdee_high = round(tdee, 1)
+
             # NEAT = 设备报告的总消耗 - 静息消耗 - 活动消耗 (仅外部数据源有差值)
             neat = round(max(0, external_tdee - resting_burn - active_burn), 1) if external_tdee is not None else 0.0
             reports[date_str] = {
                 "active_burn_kcal": round(active_burn, 1),
+                "active_burn_kcal_low": active_burn_low,
+                "active_burn_kcal_high": active_burn_high,
                 "resting_burn_kcal": round(resting_burn, 1),
                 "tdee_kcal": round(tdee, 1),
+                "tdee_kcal_low": tdee_low,
+                "tdee_kcal_high": tdee_high,
                 "neat_estimate_kcal": neat,
-                "active_burn_source": source_active
+                "active_burn_source": source_active,
+                "active_burn_method": method,
+                "active_burn_confidence_score": round(confidence_score, 2),
+                "active_burn_confidence_label": confidence_label,
+                "active_burn_assumptions": assumptions,
             }
             
         return reports
@@ -508,7 +628,7 @@ def generate_health_report(extracted_dir, data_dir=None, start_date=None, end_da
 
     hr_report = HeartRateAnalyzer(age=age).analyze(hr_df)
     sleep_report = SleepAnalyzer().analyze(sleep_df)
-    body_comp_report = BodyCompositionAnalyzer().analyze(weight_df)
+    body_comp_report = BodyCompositionAnalyzer(height_cm=height).analyze(weight_df)
     activity_report = ActivityAnalyzer().analyze(steps_df)
     energy_report = EnergyAnalyzer(age=age, is_male=is_male, height=height).analyze(energy_df, hr_df, weight_df)
     

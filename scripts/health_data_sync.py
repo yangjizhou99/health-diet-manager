@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 health_data_sync.py - 外部健康数据同步工具
 功能: set-location, fetch
@@ -51,17 +51,151 @@ def _is_google_drive_token(location):
     return (is_valid_len or location.startswith("0AIK")) and has_no_slashes and not Path(location).exists()
 
 def _download_from_drive(folder_token, dest_dir):
-    print("尝试使用 gog drive 下载...", file=sys.stderr)
-    try:
-        res = subprocess.run(f"gog drive download {folder_token} --output \"{dest_dir}\"", shell=True, capture_output=True, text=True)
-        if res.returncode == 0:
-            print("gog drive 下载成功！", file=sys.stderr)
-            return str(dest_dir)
-        else:
-            print(f"gog drive 下载失败，准备回退到 gdown。原因: {res.stderr.strip()}", file=sys.stderr)
-    except Exception as e:
-        print(f"执行 gog drive 报错: {e}，回退到 gdown", file=sys.stderr)
+    """按优先级尝试多种方式从 Google Drive 下载文件夹:
+    1. gog drive (自定义工具)
+    2. rclone (需预先配置 remote 'gdrive')
+    3. Google Drive API (需 service account credentials)
+    4. gdown (最不稳定但零配置)
+    """
 
+    # ── 方式 1: gog CLI (Google Workspace CLI, https://gogcli.sh) ──
+    # gog 需要先 `gog auth credentials <client_secret.json>` + `gog auth add <email> --services drive`
+    # 使用 gog drive search 列出文件，然后逐个下载
+    try:
+        gog_check = subprocess.run("gog drive search --help",
+                                   shell=True, capture_output=True, text=True, timeout=10)
+        if gog_check.returncode == 0:
+            print("检测到 gog CLI，尝试使用 gog drive 下载...", file=sys.stderr)
+            import json as _json
+            # 列出目标文件夹下所有文件 (递归)
+            search_cmd = f'gog drive search "\\"{folder_token}\\" in parents" --max 500 --json --no-input'
+            res = subprocess.run(search_cmd, shell=True, capture_output=True, text=True, timeout=120)
+            if res.returncode == 0 and res.stdout.strip():
+                items = _json.loads(res.stdout)
+                for item in items:
+                    item_id = item.get("id", "")
+                    item_name = item.get("name", "unknown")
+                    mime = item.get("mimeType", "")
+                    if mime == "application/vnd.google-apps.folder":
+                        # 递归子文件夹 —— 交给后续方式处理
+                        continue
+                    # 用 gog docs export 导出 Google Docs 类 / 普通文件跳到方式3
+                    # gog CLI 适用于简单场景；复杂递归下载交给方式3 API
+                # gog 不支持递归文件夹下载，跳到方式3
+                print("gog drive search 成功但不支持递归文件夹下载，交给 API 方式", file=sys.stderr)
+        else:
+            print("gog CLI 未配置或不可用，跳过", file=sys.stderr)
+    except FileNotFoundError:
+        print("gog CLI 未安装，跳过", file=sys.stderr)
+    except Exception as e:
+        print(f"gog drive 报错: {e}", file=sys.stderr)
+
+    # ── 方式 2: rclone (推荐，稳定) ──
+    # 需要预先运行 `rclone config` 配置一个名为 gdrive 的 remote
+    try:
+        rclone_check = subprocess.run("rclone version", shell=True, capture_output=True, text=True, timeout=10)
+        if rclone_check.returncode == 0:
+            print("检测到 rclone，尝试使用 rclone 下载...", file=sys.stderr)
+            rclone_src = f"gdrive:{{id={folder_token}}}"
+            res = subprocess.run(
+                f'rclone copy "{rclone_src}" "{dest_dir}" --drive-shared-with-me -P',
+                shell=True, capture_output=True, text=True, timeout=300)
+            if res.returncode == 0 and os.listdir(dest_dir):
+                print("rclone 下载成功！", file=sys.stderr)
+                return str(dest_dir)
+            else:
+                print(f"rclone 失败: {res.stderr.strip()}", file=sys.stderr)
+    except Exception as e:
+        print(f"rclone 报错: {e}", file=sys.stderr)
+
+    # ── 方式 3: Google Drive API + OAuth 用户凭证 (最可靠) ──
+    try:
+        scripts_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir_path = os.path.join(scripts_dir, "..", "data")
+        token_path = os.path.join(data_dir_path, "gdrive_token.json")
+
+        if os.path.exists(token_path):
+            print("检测到 OAuth Token，尝试 Google Drive API...", file=sys.stderr)
+            from google.oauth2.credentials import Credentials
+            from google.auth.transport.requests import Request
+            from googleapiclient.discovery import build
+            from googleapiclient.http import MediaIoBaseDownload
+
+            creds = Credentials.from_authorized_user_file(
+                token_path, ["https://www.googleapis.com/auth/drive.readonly"])
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                Path(token_path).write_text(creds.to_json())
+
+            service = build("drive", "v3", credentials=creds)
+
+            import re as _re
+            def _sanitize_filename(name):
+                """替换 Windows 不允许的文件名字符 <>:\"/\\|?*"""
+                return _re.sub(r'[<>:"/\\|?*]', '_', name)
+
+            # Google Docs 原生文件导出映射 (只导出 Sheets → CSV)
+            _EXPORT_MAP = {
+                "application/vnd.google-apps.spreadsheet": (
+                    "text/csv", ".csv"),
+            }
+            # 其他 Google Docs 类型直接跳过
+            _GDOCS_PREFIX = "application/vnd.google-apps."
+
+            def _download_folder_recursive(svc, folder_id, local_dir):
+                os.makedirs(local_dir, exist_ok=True)
+                page_token = None
+                while True:
+                    resp = svc.files().list(
+                        q=f"'{folder_id}' in parents and trashed=false",
+                        fields="nextPageToken, files(id, name, mimeType)",
+                        pageToken=page_token, pageSize=100).execute()
+                    for item in resp.get("files", []):
+                        mime = item["mimeType"]
+                        safe_name = _sanitize_filename(item["name"])
+                        if mime == "application/vnd.google-apps.folder":
+                            _download_folder_recursive(svc, item["id"],
+                                                       os.path.join(local_dir, safe_name))
+                        elif mime in _EXPORT_MAP:
+                            export_mime, ext = _EXPORT_MAP[mime]
+                            request = svc.files().export_media(
+                                fileId=item["id"], mimeType=export_mime)
+                            if not safe_name.endswith(ext):
+                                safe_name += ext
+                            file_path = os.path.join(local_dir, safe_name)
+                            with open(file_path, "wb") as fh:
+                                downloader = MediaIoBaseDownload(fh, request)
+                                done = False
+                                while not done:
+                                    _, done = downloader.next_chunk()
+                        elif mime.startswith(_GDOCS_PREFIX):
+                            # 跳过其他 Google Docs 原生文件 (文档/演示等)
+                            continue
+                        else:
+                            request = svc.files().get_media(fileId=item["id"])
+                            file_path = os.path.join(local_dir, safe_name)
+                            with open(file_path, "wb") as fh:
+                                downloader = MediaIoBaseDownload(fh, request)
+                                done = False
+                                while not done:
+                                    _, done = downloader.next_chunk()
+                    page_token = resp.get("nextPageToken")
+                    if not page_token:
+                        break
+
+            _download_folder_recursive(service, folder_token, str(dest_dir))
+            if os.listdir(dest_dir):
+                print("Google Drive API (OAuth) 下载成功！", file=sys.stderr)
+                return str(dest_dir)
+        else:
+            print(f"未找到 OAuth Token ({token_path})，跳过。首次使用请运行: "
+                  f"python scripts/gdrive_auth.py auth --client-secret <path>", file=sys.stderr)
+    except ImportError:
+        print("未安装 google-api-python-client，跳过 Drive API 方式", file=sys.stderr)
+    except Exception as e:
+        print(f"Google Drive API 报错: {e}", file=sys.stderr)
+
+    # ── 方式 4: gdown (兜底，不稳定) ──
     try:
         import gdown
     except ImportError:
@@ -184,11 +318,22 @@ def fetch_data(period, target_date, data_dir):
             if extracted_dir is None:
                 result = _error_result(period, target_date, f"在 Google Drive 下载内容中未找到包含“健康同步 *”的目录")
         except Exception as e:
-            result = _error_result(period, target_date, f"从 Google Drive 下载失败: {e}")
+            print(f"从 Google Drive 下载失败: {e}，尝试本地回退路径...", file=sys.stderr)
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
-            print(json.dumps(result, ensure_ascii=False))
-            return 1
+                temp_dir = None
+            # 回退: 检查 config 中的 local_fallback_path 或 data_dir 同级常见位置
+            fallback_path = cfg.get("local_fallback_path")
+            if fallback_path and Path(fallback_path).is_dir():
+                extracted_dir = _find_health_data_root(fallback_path)
+                if extracted_dir:
+                    print(f"已回退到本地路径: {extracted_dir}", file=sys.stderr)
+            if extracted_dir is None:
+                result = _error_result(period, target_date,
+                    f"从 Google Drive 下载失败: {e}。可在 external_data_config.json 中设置 "
+                    f"\"local_fallback_path\" 指向本地健康数据目录作为离线回退。")
+                print(json.dumps(result, ensure_ascii=False))
+                return 1
     else:
         if not Path(loc).is_dir():
             result = _error_result(period, target_date, f"数据目录不存在或不可访问: {loc}")

@@ -140,8 +140,14 @@ def build_llm_objective_payload(report_type, start, end, target_dates, targets, 
     awake_mins = [sleep_metrics[d].get("awake_interruptions_mins", 0) for d in target_dates if d in sleep_metrics]
 
     tdee_values = [energy_metrics[d].get("tdee_kcal", 0) for d in target_dates if d in energy_metrics]
+    tdee_low_values = [energy_metrics[d].get("tdee_kcal_low", energy_metrics[d].get("tdee_kcal", 0)) for d in target_dates if d in energy_metrics]
+    tdee_high_values = [energy_metrics[d].get("tdee_kcal_high", energy_metrics[d].get("tdee_kcal", 0)) for d in target_dates if d in energy_metrics]
     active_burn_values = [energy_metrics[d].get("active_burn_kcal", 0) for d in target_dates if d in energy_metrics]
+    active_burn_low_values = [energy_metrics[d].get("active_burn_kcal_low", energy_metrics[d].get("active_burn_kcal", 0)) for d in target_dates if d in energy_metrics]
+    active_burn_high_values = [energy_metrics[d].get("active_burn_kcal_high", energy_metrics[d].get("active_burn_kcal", 0)) for d in target_dates if d in energy_metrics]
     resting_burn_values = [energy_metrics[d].get("resting_burn_kcal", 0) for d in target_dates if d in energy_metrics]
+    confidence_labels = [energy_metrics[d].get("active_burn_confidence_label") for d in target_dates if d in energy_metrics]
+    estimated_days = [d for d in target_dates if d in energy_metrics and energy_metrics[d].get("active_burn_source") == "estimated_from_hr"]
 
     body_records = [body_metrics[d] for d in target_dates if d in body_metrics]
     latest_body = body_records[-1] if body_records else {}
@@ -182,9 +188,15 @@ def build_llm_objective_payload(report_type, start, end, target_dates, targets, 
         },
         "energy": {
             "avg_tdee_kcal": avg_tdee,
+            "avg_tdee_kcal_low": round(sum(tdee_low_values) / len(tdee_low_values), 1) if tdee_low_values else 0,
+            "avg_tdee_kcal_high": round(sum(tdee_high_values) / len(tdee_high_values), 1) if tdee_high_values else 0,
             "avg_active_burn_kcal": round(sum(active_burn_values) / len(active_burn_values), 1) if active_burn_values else 0,
+            "avg_active_burn_kcal_low": round(sum(active_burn_low_values) / len(active_burn_low_values), 1) if active_burn_low_values else 0,
+            "avg_active_burn_kcal_high": round(sum(active_burn_high_values) / len(active_burn_high_values), 1) if active_burn_high_values else 0,
             "avg_resting_burn_kcal": round(sum(resting_burn_values) / len(resting_burn_values), 1) if resting_burn_values else 0,
             "avg_intake_minus_tdee_kcal": round(avg_intake - avg_tdee, 1) if avg_intake and avg_tdee else None,
+            "estimated_from_hr_days": len(estimated_days),
+            "active_burn_confidence_labels": confidence_labels,
         },
         "body_composition_latest": latest_body,
     }
@@ -373,10 +385,21 @@ def generate_merged_report(data_dir, report_type, end_date_str):
             lines.append(f"- **高频食物**: {food_line}")
 
     lines.append("\n## 🏃‍♂️ 外部健康指标概览")
-    # 尝试加载缓存的外部数据（如果存在）
+    # 尝试加载缓存的外部数据，缓存不存在则自动触发 fetch
     period_key = "day" if report_type == "daily" else ("week" if report_type == "weekly" else "month")
     cache_path = dd / f"health_cache_{period_key}_{end_date_str}.json"
     
+    if not cache_path.exists():
+        print(f"[Report] 缓存 {cache_path.name} 不存在，尝试自动同步...", file=__import__('sys').stderr)
+        try:
+            scripts_dir = str(Path(__file__).resolve().parent)
+            if scripts_dir not in __import__('sys').path:
+                __import__('sys').path.insert(0, scripts_dir)
+            from health_data_sync import fetch_data
+            fetch_data(period_key, end_date_str, str(dd))
+        except Exception as e:
+            print(f"[Report] 自动同步失败: {e}", file=__import__('sys').stderr)
+
     if cache_path.exists():
         ext_data = load_json(cache_path)
         metrics = ext_data.get("metrics", {})
@@ -409,7 +432,16 @@ def generate_merged_report(data_dir, report_type, end_date_str):
         valid_bodies = [body_metrics[d] for d in target_dates if d in body_metrics]
         if valid_bodies:
             body = valid_bodies[-1] # 最新的一天
-            lines.append(f"- **周期末体成分**: {body.get('weight_kg', '未知')}kg, **体脂**: {body.get('body_fat_pct', '未知')}%, **骨骼肌/脂肪比(SMI)**: {body.get('smi_ratio', '未知')}")
+            muscle_fat_ratio = body.get('muscle_fat_ratio', body.get('smi_ratio', '未知'))
+            line = (
+                f"- **周期末体成分**: {body.get('weight_kg', '未知')}kg, "
+                f"**体脂**: {body.get('body_fat_pct', '未知')}%, "
+                f"**骨骼肌/脂肪比**: {muscle_fat_ratio}"
+            )
+            smi_kg_m2 = body.get('smi_kg_m2')
+            if smi_kg_m2 is not None:
+                line += f", **SMI(kg/m2)**: {smi_kg_m2}"
+            lines.append(line)
         
         # 3. 提取心率与隐性运动
         hr_info = metrics.get("cardiovascular_health", {})
@@ -445,6 +477,20 @@ def generate_merged_report(data_dir, report_type, end_date_str):
             avg_active = sum(e.get('active_burn_kcal', 0) for e in energies) / len(energies)
             avg_tdee = sum(e.get('tdee_kcal', 0) for e in energies) / len(energies)
             lines.append(f"- **周期日均消耗**: 基础代谢 {avg_resting:.1f} kcal | 动态活动 {avg_active:.1f} kcal | TDEE {avg_tdee:.1f} kcal")
+            est_energies = [e for e in energies if e.get('active_burn_source') == 'estimated_from_hr']
+            if est_energies:
+                avg_low = sum(e.get('active_burn_kcal_low', e.get('active_burn_kcal', 0)) for e in est_energies) / len(est_energies)
+                avg_high = sum(e.get('active_burn_kcal_high', e.get('active_burn_kcal', 0)) for e in est_energies) / len(est_energies)
+                labels = [e.get('active_burn_confidence_label') for e in est_energies if e.get('active_burn_confidence_label')]
+                # 取最保守标签；若历史缓存无标签，则标注 unknown。
+                if not labels:
+                    label = 'unknown'
+                else:
+                    label = 'low' if 'low' in labels else ('medium' if 'medium' in labels else 'high')
+                lines.append(
+                    f"- **心率回退估算说明**: {len(est_energies)} 天使用心率推算，"
+                    f"活动消耗区间约 {avg_low:.1f}~{avg_high:.1f} kcal/天，置信度 {label}"
+                )
             
     else:
         lines.append("- 未检测到当期外部同步数据，请确保执行了 fetch 以连接健康系统。")
