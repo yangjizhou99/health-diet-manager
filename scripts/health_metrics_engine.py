@@ -351,16 +351,13 @@ class EnergyAnalyzer:
                 # 或者严格一点基于 Keytel 积分:
                 estimated_active_kcals = 0.0
                 
-                # 需要用到心率差值，简单地将连续的高心率点(>90bpm)积分
-                active_hr_pts = hr_day_df[hr_day_df['心率'] > 90]
+                # 需要用到心率差值，考虑到原始数据可能很密集或稀疏，先以分钟为单位重采样
+                hr_resampled = hr_day_df.set_index('Datetime')[['心率']].resample('1min').mean().ffill(limit=5)
+                active_hr_pts = hr_resampled[hr_resampled['心率'] > 90]
                 
                 if not active_hr_pts.empty:
-                    # 分别计算每个心率点的卡路里消耗率，然后加总（假设每条记录代表1分钟，考虑到重采样可做到精确）
-                    # 对于有规律的时序，按照 Keytel:
-                    # Cal/min = (-55.0969 + (0.6309 * HR) + (0.1988 * Wt_kg) + (0.2017 * Age)) / 4.184 (男性版)
-                    # 男：Cal/min = (-55.0969 + (0.6309 * HR) + (0.1988 * Wt) + (0.2017 * Age))/4.184
-                    # 女：Cal/min = (-20.4022 + (0.4472 * HR) - (0.1263 * Wt) + (0.074  * Age))/4.184
-                    
+                    # 分别计算每个分钟级心率点的卡路里消耗率，然后加总
+                    # 按照 Keytel 公式估测能量:
                     for hr in active_hr_pts['心率']:
                         if self.gender_factor == 1:
                             cal_per_min = (-55.0969 + (0.6309 * hr) + (0.1988 * weight) + (0.2017 * self.age)) / 4.184

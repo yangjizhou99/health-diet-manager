@@ -192,43 +192,62 @@ def generate_merged_report(data_dir, report_type, end_date_str):
         ext_data = load_json(cache_path)
         metrics = ext_data.get("metrics", {})
         
-        target_date_str = ext_data.get("target_date", end_date_str)
+        # 找出当前周期内有效的所有日期
+        target_dates = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
         
         # 1. 提取日常活动
-        activity = metrics.get("daily_activity", {}).get(target_date_str, {})
-        lines.append(f"- **总步数**: {activity.get('total_steps', '无记录')}")
-        lines.append(f"- **连续久坐波段**: {activity.get('sedentary_3h_blocks_count', 0)} 波")
+        activity_metrics = metrics.get("daily_activity", {})
+        total_steps_list = [activity_metrics[d].get('total_steps', 0) for d in target_dates if d in activity_metrics]
+        total_sedentary_blocks = sum([activity_metrics[d].get('sedentary_3h_blocks_count', 0) for d in target_dates if d in activity_metrics])
         
-        # 2. 提取体成分
-        body = metrics.get("body_composition", {}).get(target_date_str, {})
-        if body:
-            lines.append(f"- **体重**: {body.get('weight_kg', '未知')}kg, **体脂**: {body.get('body_fat_pct', '未知')}%, **骨骼肌/脂肪比(SMI)**: {body.get('smi_ratio', '未知')}")
+        if total_steps_list:
+            avg_steps = sum(total_steps_list) // len(total_steps_list)
+            lines.append(f"- **步数概览**: 周期日均 {avg_steps} 步 (最高 {max(total_steps_list)} 步)")
+            lines.append(f"- **连续久坐**: 周期累计 {total_sedentary_blocks} 波长时久坐")
+        else:
+            lines.append("- **步数概览**: 无有效步数记录")
+        
+        # 2. 提取体成分 (取周期最后一条有效数据)
+        body_metrics = metrics.get("body_composition", {})
+        valid_bodies = [body_metrics[d] for d in target_dates if d in body_metrics]
+        if valid_bodies:
+            body = valid_bodies[-1] # 最新的一天
+            lines.append(f"- **周期末体成分**: {body.get('weight_kg', '未知')}kg, **体脂**: {body.get('body_fat_pct', '未知')}%, **骨骼肌/脂肪比(SMI)**: {body.get('smi_ratio', '未知')}")
         
         # 3. 提取心率与隐性运动
         hr_info = metrics.get("cardiovascular_health", {})
         lines.append(f"- **全天静息心率基线**: {hr_info.get('baseline', {}).get('estimated_rhr', '未知')} bpm")
         workouts = hr_info.get("inferred_workouts", [])
         if period_key == "day":
+             target_date_str = target_dates[0]
              day_workouts = [w for w in workouts if target_date_str in w.get("start","")]
              if day_workouts:
                  lines.append(f"- **隐性运动探针**: 发现 {len(day_workouts)} 个有氧波段, 总计 {sum(w['duration_minutes'] for w in day_workouts)} 分钟")
              else:
                  lines.append("- **隐性运动探针**: 今日无明显中高强度心率波段记录")
         else:
-             lines.append(f"- **全周期累计Zone2+有效运动**: {hr_info.get('total_exercise_minutes_zone2_plus', 0)} 分钟")
+             period_workouts = [w for w in workouts if w.get("start", "")[:10] in target_dates]
+             total_mins = sum(w['duration_minutes'] for w in period_workouts)
+             lines.append(f"- **全周期累计Zone2+有效运动**: {total_mins} 分钟 ({len(period_workouts)} 次)")
                  
         # 4. 提取睡眠架构
-        sleep = metrics.get("sleep_recovery", {}).get(target_date_str, {})
-        if sleep:
-            lines.append(f"- **净睡眠**: {sleep.get('total_sleep_hours', 0)}小时 (深睡比例 {float(sleep.get('deep_sleep_ratio', 0)) * 100:.1f}%)")
-            lines.append(f"- **微觉醒打断**: {sleep.get('awake_interruptions_mins', 0)} 分钟")
+        sleep_metrics = metrics.get("sleep_recovery", {})
+        sleeps = [sleep_metrics[d] for d in target_dates if d in sleep_metrics]
+        if sleeps:
+            avg_sleep_h = sum(s.get('total_sleep_hours', 0) for s in sleeps) / len(sleeps)
+            avg_deep_ratio = sum(float(s.get('deep_sleep_ratio', 0)) for s in sleeps) / len(sleeps)
+            total_awakes = sum(s.get('awake_interruptions_mins', 0) for s in sleeps)
+            lines.append(f"- **睡眠架构**: 日均净睡眠 {avg_sleep_h:.1f} 小时 (深睡比例 {avg_deep_ratio * 100:.1f}%)")
+            lines.append(f"- **微觉醒打断**: 周期累计 {int(total_awakes)} 分钟")
             
         # 5. 提取精密能耗
-        energy = metrics.get("energy_expenditure", {}).get(target_date_str, {})
-        if energy:
-            lines.append(f"- **基础代谢消耗**: {energy.get('resting_burn_kcal', 0)} kcal")
-            lines.append(f"- **动态活动消耗**: {energy.get('active_burn_kcal', 0)} kcal (数据源: {energy.get('active_burn_source', '未知')})")
-            lines.append(f"- **全天总能量消耗(TDEE)**: {energy.get('tdee_kcal', 0)} kcal")
+        energy_metrics = metrics.get("energy_expenditure", {})
+        energies = [energy_metrics[d] for d in target_dates if d in energy_metrics]
+        if energies:
+            avg_resting = sum(e.get('resting_burn_kcal', 0) for e in energies) / len(energies)
+            avg_active = sum(e.get('active_burn_kcal', 0) for e in energies) / len(energies)
+            avg_tdee = sum(e.get('tdee_kcal', 0) for e in energies) / len(energies)
+            lines.append(f"- **周期日均消耗**: 基础代谢 {avg_resting:.1f} kcal | 动态活动 {avg_active:.1f} kcal | TDEE {avg_tdee:.1f} kcal")
             
     else:
         lines.append("- 未检测到当期外部同步数据，请确保执行了 fetch 以连接健康系统。")
