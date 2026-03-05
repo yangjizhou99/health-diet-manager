@@ -356,6 +356,76 @@ python scripts/skill_updater.py apply \
 
 ---
 
+## 10. Notion 笔记同步 (V3 新增)
+
+将每日/周/月健康报告自动同步到 Notion 笔记，以结构化模板展示。
+
+### 10.1 初始化 Notion 连接
+
+用户首次使用时，需要提供 Notion Integration Token 和目标位置：
+
+```bash
+python scripts/notion_health_sync.py init-config \
+  --token "<Notion Integration Token>" \
+  --database-id "<目标数据库 ID>" \
+  --data-dir "<SKILL目录>/data"
+```
+
+> 也可以使用 `--parent-page-id` 替代 `--database-id`，直接在某个页面下创建子页面。
+
+### 10.2 推送报告到 Notion
+
+**推送指定报告：**
+```bash
+python scripts/notion_health_sync.py push-report \
+  --report-file "<报告JSON路径>" \
+  --data-dir "<SKILL目录>/data"
+```
+
+**自动推送最新报告：**
+```bash
+python scripts/notion_health_sync.py push-latest \
+  --type "<daily/weekly/monthly>" \
+  --data-dir "<SKILL目录>/data"
+```
+
+### 10.3 Notion 页面模板结构
+
+生成的 Notion 页面包含以下结构化板块：
+
+| 板块 | 内容 | 展示方式 |
+|------|------|---------|
+| 🧬 报告概览 | 报告类型、周期、数据完成度 | Callout (蓝色背景) |
+| 🍎 饮食分析 | 营养素达成率、高频食物、均衡评分 | 表格 + Callout |
+| ❤️ 心血管健康 | 静息心率、峰值心率、推测运动记录 | Callout + 表格 |
+| 😴 睡眠恢复 | 每日睡眠时长、深睡比、REM比、效率 | 表格 + 统计 Callout |
+| 🏃 日常活动 | 步数、久坐段数、达标状态 | 表格 |
+| ⚡ 能量收支 | TDEE、活动消耗、基础代谢 | 表格 |
+| ⚖️ 体成分趋势 | 体重、体脂率、骨骼肌、BMR | 表格 + 趋势 Callout |
+| 💡 AI 健康建议 | 基于客观数据的个性化建议 | 列表项 |
+
+### 10.4 预览模板
+
+无需 Notion Token 即可预览将生成的 blocks 结构：
+```bash
+python scripts/notion_health_sync.py preview \
+  --report-file "<报告JSON路径>" \
+  --data-dir "<SKILL目录>/data"
+```
+
+### 10.5 Notion 数据库配置要求
+
+如果使用数据库模式推送，建议预先创建以下数据库列：
+
+| 列名 | 类型 | 说明 |
+|------|------|------|
+| Name | Title | 页面标题 (自动填充) |
+| 报告类型 | Select | 日报/周报/月报 |
+| 日期 | Date | 报告覆盖的日期范围 |
+| 合并分析 | Checkbox | 是否包含外部设备数据 |
+
+---
+
 ## 重要注意事项
 
 1. **图片识别**：使用你自身的多模态视觉能力来识别食物，不依赖外部API
