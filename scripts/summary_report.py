@@ -68,7 +68,7 @@ def generate_report(data_dir, report_type, end_date_str):
     # 统计
     days_with_data = [d for d,v in daily.items() if v["meals"]>0]
     n = len(days_with_data)
-    period = "周" if report_type=="weekly" else "月"
+    period = {"daily": "日", "weekly": "周", "monthly": "月"}.get(report_type, "周期")
     title = f"{start} ~ {end}"
 
     lines = []
@@ -206,6 +206,17 @@ def generate_merged_report(data_dir, report_type, end_date_str):
             lines.append(f"- **连续久坐**: 周期累计 {total_sedentary_blocks} 波长时久坐")
         else:
             lines.append("- **步数概览**: 无有效步数记录")
+            
+        all_fast_walks = []
+        for d in target_dates:
+            if d in activity_metrics:
+                all_fast_walks.extend(activity_metrics[d].get("fast_walks", []))
+        
+        if all_fast_walks:
+            lines.append(f"- **高频快走推算**: 周期累计 {len(all_fast_walks)} 段连续快走 (耗时 {sum(w['duration_minutes'] for w in all_fast_walks)} 分钟)")
+            if period_key == "day":
+                for w in all_fast_walks:
+                    lines.append(f"  - 🏃‍♂️ {w['start'][11:16]}~{w['end'][11:16]} | {w['duration_minutes']}分钟 | {w['total_steps']}步 (最高 {w['max_steps_per_min']}步/分)")
         
         # 2. 提取体成分 (取周期最后一条有效数据)
         body_metrics = metrics.get("body_composition", {})

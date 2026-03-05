@@ -50,9 +50,28 @@ def cmd_preview(args):
         "description": args.description,
     }, ensure_ascii=False, indent=2))
 
+def _resolve_backup_path(data_dir, target_file, backup_id):
+    return Path(data_dir) / "backups" / f"{Path(target_file).name}.{backup_id}.bak"
+
 def cmd_apply(args):
     """应用修改（AI已经修改了文件后，记录更新历史）"""
     dd = Path(args.data_dir); dd.mkdir(parents=True, exist_ok=True)
+    backup_path = _resolve_backup_path(args.data_dir, args.target_file, args.backup_id)
+    if not backup_path.exists():
+        print(json.dumps({
+            "status": "error",
+            "message": f"备份不存在，无法确认应用: {backup_path}"
+        }, ensure_ascii=False))
+        sys.exit(1)
+
+    target = Path(args.target_file)
+    if not target.exists():
+        print(json.dumps({
+            "status": "error",
+            "message": f"目标文件不存在: {args.target_file}"
+        }, ensure_ascii=False))
+        sys.exit(1)
+
     hist_path = dd / "update_history.json"
     hist = load_json(hist_path, {"updates": []})
 
@@ -62,7 +81,7 @@ def cmd_apply(args):
         "target_file": args.target_file,
         "description": args.description,
         "result": "approved",
-        "backup_path": str(Path(args.data_dir) / "backups" / f"{Path(args.target_file).name}.{args.backup_id}.bak"),
+        "backup_path": str(backup_path),
     }
 
     hist["updates"].append(update_entry)
@@ -78,12 +97,24 @@ def cmd_apply(args):
 def cmd_reject(args):
     """拒绝修改，恢复备份"""
     dd = Path(args.data_dir)
-    backup_path = dd / "backups" / f"{Path(args.target_file).name}.{args.backup_id}.bak"
+    backup_path = _resolve_backup_path(args.data_dir, args.target_file, args.backup_id)
+    if not backup_path.exists():
+        print(json.dumps({
+            "status": "error",
+            "message": f"备份不存在，无法恢复: {backup_path}"
+        }, ensure_ascii=False))
+        sys.exit(1)
 
-    if backup_path.exists():
-        target = Path(args.target_file)
+    target = Path(args.target_file)
+    try:
         shutil.copy2(backup_path, target)
         backup_path.unlink()
+    except Exception as e:
+        print(json.dumps({
+            "status": "error",
+            "message": f"恢复备份失败: {e}"
+        }, ensure_ascii=False))
+        sys.exit(1)
 
     # 记录拒绝
     hist_path = dd / "update_history.json"

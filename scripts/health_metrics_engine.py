@@ -284,13 +284,55 @@ class ActivityAnalyzer:
             total_steps = int(group['步数'].sum())
             
             # 计算久坐中断 (连续3小时步数 < 100)
-            group = group.set_index('Datetime')
-            resampled_3h = group['步数'].resample('3h').sum()
+            group_dt = group.set_index('Datetime')
+            resampled_3h = group_dt['步数'].resample('3h').sum()
             sedentary_blocks = int((resampled_3h < 100).sum())
+            
+            # 推算高频快走 (连续5分钟以上，每分钟>=100步)
+            resampled_1min = group_dt['步数'].resample('1min').sum().fillna(0)
+            fast_walks = []
+            in_walk = False
+            walk_start = None
+            current_walk_steps = 0
+            current_walk_mins = 0
+            
+            for time, steps in resampled_1min.items():
+                if steps >= 100:
+                    if not in_walk:
+                        in_walk = True
+                        walk_start = time
+                    current_walk_steps += steps
+                    current_walk_mins += 1
+                else:
+                    if in_walk:
+                        if current_walk_mins >= 5:
+                            end_time = time - pd.Timedelta(minutes=1)
+                            fast_walks.append({
+                                "start": walk_start.strftime("%Y-%m-%d %H:%M:%S"),
+                                "end": end_time.strftime("%Y-%m-%d %H:%M:%S"),
+                                "duration_minutes": current_walk_mins,
+                                "total_steps": int(current_walk_steps),
+                                "max_steps_per_min": int(resampled_1min[walk_start:end_time].max())
+                            })
+                        in_walk = False
+                        walk_start = None
+                        current_walk_steps = 0
+                        current_walk_mins = 0
+                        
+            if in_walk and current_walk_mins >= 5:
+                end_time = resampled_1min.index[-1]
+                fast_walks.append({
+                    "start": walk_start.strftime("%Y-%m-%d %H:%M:%S"),
+                    "end": end_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "duration_minutes": current_walk_mins,
+                    "total_steps": int(current_walk_steps),
+                    "max_steps_per_min": int(resampled_1min[walk_start:end_time].max())
+                })
             
             reports[str(date)] = {
                 "total_steps": total_steps,
-                "sedentary_3h_blocks_count": sedentary_blocks
+                "sedentary_3h_blocks_count": sedentary_blocks,
+                "fast_walks": fast_walks
             }
         return reports
 
@@ -410,7 +452,38 @@ def _load_user_profile(data_dir=None):
             pass
     return default
 
-def generate_health_report(extracted_dir, data_dir=None):
+def _parse_date_arg(value, field_name):
+    if value is None:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be YYYY-MM-DD, got: {value}") from exc
+
+
+def _filter_datetime_df(df, start_date=None, end_date=None):
+    if df.empty or "Datetime" not in df.columns:
+        return df
+    result = df
+    if start_date is not None:
+        result = result[result["Datetime"].dt.date >= start_date]
+    if end_date is not None:
+        result = result[result["Datetime"].dt.date <= end_date]
+    return result.reset_index(drop=True)
+
+
+def _filter_date_df(df, start_date=None, end_date=None):
+    if df.empty or "Date" not in df.columns:
+        return df
+    result = df
+    if start_date is not None:
+        result = result[result["Date"] >= start_date]
+    if end_date is not None:
+        result = result[result["Date"] <= end_date]
+    return result.reset_index(drop=True)
+
+
+def generate_health_report(extracted_dir, data_dir=None, start_date=None, end_date=None):
     """引擎入口: 统筹分析并生成结构化报告 (纯数据版)"""
     print(f"[Engine] 加载数据目录: {extracted_dir}")
     parser = HealthDataParser(extracted_dir)
@@ -421,15 +494,22 @@ def generate_health_report(extracted_dir, data_dir=None):
     is_male = user_info["is_male"]
     height = user_info["height"]
     print(f"[Engine] 使用用户参数: age={age}, is_male={is_male}, height={height}")
-    
-    hr_df = parser.load_heart_rate()
-    weight_df = parser.load_weight()
-    energy_df = parser.load_energy()
+
+    start = _parse_date_arg(start_date, "start_date")
+    end = _parse_date_arg(end_date, "end_date")
+    if start and end and start > end:
+        raise ValueError(f"start_date cannot be after end_date: {start} > {end}")
+
+    hr_df = _filter_datetime_df(parser.load_heart_rate(), start, end)
+    sleep_df = _filter_date_df(parser.load_sleep(), start, end)
+    weight_df = _filter_datetime_df(parser.load_weight(), start, end)
+    steps_df = _filter_datetime_df(parser.load_steps(), start, end)
+    energy_df = _filter_datetime_df(parser.load_energy(), start, end)
 
     hr_report = HeartRateAnalyzer(age=age).analyze(hr_df)
-    sleep_report = SleepAnalyzer().analyze(parser.load_sleep())
+    sleep_report = SleepAnalyzer().analyze(sleep_df)
     body_comp_report = BodyCompositionAnalyzer().analyze(weight_df)
-    activity_report = ActivityAnalyzer().analyze(parser.load_steps())
+    activity_report = ActivityAnalyzer().analyze(steps_df)
     energy_report = EnergyAnalyzer(age=age, is_male=is_male, height=height).analyze(energy_df, hr_df, weight_df)
     
     comprehensive_report = {

@@ -8,6 +8,12 @@ import argparse, json, os, sys
 from datetime import datetime, date
 from pathlib import Path
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 def ensure_data_dir(d):
     p = Path(d); p.mkdir(parents=True, exist_ok=True); return p
 
@@ -163,12 +169,12 @@ def cmd_show_profile(a):
     print(json.dumps({"status":"success","profile":p},ensure_ascii=False,indent=2))
 
 def cmd_test(a):
-    print("🧪 自检测试")
+    print("自检测试")
     bmr=calc_bmr("男",30,175,70); tdee=calc_tdee(bmr,"轻度活动"); tgt=calc_targets(tdee,"减脂")
     print(f"  BMR:{round(bmr)}kcal TDEE:{round(tdee)}kcal 目标:{tgt['calories']}kcal")
     print(f"  蛋白质:{tgt['protein']}g 碳水:{tgt['carbs']}g 脂肪:{tgt['fat']}g")
-    assert tgt["calories"]>1200,"❌ 热量计算异常"
-    print("✅ 所有测试通过！")
+    assert tgt["calories"]>1200,"热量计算异常"
+    print("所有测试通过")
 
 def main():
     pa=argparse.ArgumentParser(description="健康饮食营养计算引擎")
