@@ -1943,6 +1943,31 @@ def validate_report_cache_consistency(report_json: dict, cache_json: dict):
             f" report={report_fp[:12]} cache={cache_fp[:12]}"
         )
 
+    llm = report_json.get("llm_objective_input", {})
+    rp = llm.get("report_period", {})
+    start = rp.get("start")
+    end = rp.get("end")
+    activity = cache_json.get("metrics", {}).get("daily_activity", {})
+    if start and end and activity:
+        dates = sorted([d for d in activity.keys() if start <= d <= end])
+        steps = [int(activity[d].get("total_steps", 0)) for d in dates]
+        cache_avg = round(sum(steps) / len(steps), 1) if steps else 0
+        cache_max = max(steps) if steps else 0
+
+        report_activity = llm.get("activity", {})
+        report_avg = report_activity.get("avg_steps", 0)
+        report_max = report_activity.get("max_steps", 0)
+        # 新版报告应携带 source_cache_step_*，旧字段作为后备校验。
+        source_avg = report_json.get("source_cache_step_avg", report_avg)
+        source_max = report_json.get("source_cache_step_max", report_max)
+
+        if int(source_avg) != int(cache_avg) or int(source_max) != int(cache_max):
+            return False, (
+                "报告步数与缓存步数不一致，拒绝推送。"
+                f" report_avg={source_avg} cache_avg={cache_avg}"
+                f" report_max={source_max} cache_max={cache_max}"
+            )
+
     return True, "ok"
 
 

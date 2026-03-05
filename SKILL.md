@@ -1,5 +1,4 @@
----
-name: health-diet-manager-v2
+name: health-diet-manager
 description: >
   V4升级：新增多设备步数智能去重（15分钟窗口取最大值），Google Drive OAuth API 可靠下载（多方式自动降级），
   缓存未命中自动刷新，Windows 文件名安全处理，Google Docs 原生文件自动导出。
@@ -8,14 +7,15 @@ description: >
   支持日/周/月多维深度汇报并同步到 Notion。向下兼容 V3。
   触发关键词：饮食、健康数据、吃了、配置存放位置、卡路里、照片、
   饮食报告、周报、月报、健康建议、改进技能、谷歌云盘、Google Drive。
-emoji: 🥗
-dependencies:
-  - python>=3.8
-  - pandas
-  - numpy
-  - google-api-python-client
-  - google-auth-oauthlib
-  - requests
+metadata:
+  icon: "salad"
+  requires:
+    - "python>=3.8"
+    - "pandas"
+    - "numpy"
+    - "google-api-python-client"
+    - "google-auth-oauthlib"
+    - "requests"
 ---
 
 # 🥗 健康饮食管理助手
@@ -203,6 +203,32 @@ python scripts/gdrive_auth.py test \
   --folder-id "<Google Drive文件夹ID>"
 ```
 
+### 4.2.1 Token 过期说明与恢复
+
+Google OAuth 中 `access_token` 是短期凭证，过期属于正常现象；脚本会优先尝试用 `refresh_token` 自动刷新。
+
+当出现“Token 过期/授权失败”时，请按以下顺序处理：
+
+1. 重新授权：
+```bash
+python scripts/gdrive_auth.py auth \
+  --client-secret "<client_secret.json路径>"
+```
+2. 验证可访问：
+```bash
+python scripts/gdrive_auth.py test \
+  --folder-id "<Google Drive文件夹ID>"
+```
+3. 再执行同步：
+```bash
+python scripts/health_data_sync.py fetch \
+  --period day \
+  --target-date "<YYYY-MM-DD>" \
+  --data-dir "<SKILL目录>/data"
+```
+
+禁止在授权失败后手动给出“保守步数/估算值”替代脚本结果。
+
 **Step 3：按需下载**
 ```bash
 python scripts/gdrive_auth.py download \
@@ -263,6 +289,16 @@ python scripts/health_data_sync.py fetch \
 
 此策略经验证与华为手机真实合并值偏差仅约 0.3%。
 
+### 4.4.1 步数口径统一规则（必须遵守）
+
+- 唯一有效口径：`health_metrics_engine.py` 的 15 分钟窗口去重累加结果（`daily_activity.<date>.total_steps`）。
+- 禁止将“单设备总步数”或“两个设备取最大值”作为最终步数直接覆盖缓存/报告。
+- 若展示层（报告/Notion）步数与 source cache 不一致，必须报错并拒绝输出。
+
+示例：
+- `Health Connect = 1837`、`Huawei Health = 1617` 只表示单源统计。
+- 最终步数必须以引擎去重结果为准，不能口头改为 `max(1837,1617)`。
+
 ### 4.5. 按需定期查询与提取
 
 ```bash
@@ -273,6 +309,21 @@ python scripts/health_data_sync.py fetch \
 ```
 
 V4 改进：缓存未命中时自动触发数据同步（`summary_report.py` 和 `notion_health_sync.py` 中均已内置此逻辑）。
+
+### 4.6. 脚本职责边界（防止混用）
+
+| 脚本 | 作用 | 是否负责“最终健康指标计算” |
+|------|------|-----------------------------|
+| `health_data_sync.py` | 外部数据同步入口、触发计算、写缓存 | 间接（调用引擎） |
+| `health_metrics_engine.py` | 心率/睡眠/步数/体成分/能耗计算核心 | **是（唯一核心）** |
+| `summary_report.py` | 读取缓存与饮食日志，生成 JSON/MD 报告 | 否（只消费结果） |
+| `notion_health_sync.py` | 推送报告到 Notion | 否（只消费结果） |
+| `nutrition_calc.py` | 饮食日志与营养目标计算（`daily_log.json`） | 否（不算步数） |
+| `gdrive_auth.py` | OAuth 授权/测试/下载 | 否 |
+
+结论：
+- 步数计算只有一个核心实现：`health_metrics_engine.py`。
+- 其余脚本只能读取/展示，不得自行“修正步数”。
 
 ---
 
@@ -481,13 +532,17 @@ python scripts/skill_updater.py apply \
 - `gdrive_token.json` — Google Drive OAuth Token (V4 新增，由 `gdrive_auth.py` 生成)
 - `report_schedule.json` — 定期汇报计划设定
 - `health_cache_{period}_{date}.json` — 外部健康数据缓存 (缓存未命中时自动刷新)
+- `health_cache_{period}_{date}_{timestamp}.json` — 版本化缓存快照（用于追溯，永不覆盖）
+- `health_cache_{period}_{date}.latest.json` — 当前有效缓存指针（active_cache_file + 指纹）
 - `reports/` — 生成的健康报告 (Markdown + JSON)
 - `backups/` — 技能更新备份目录
 
 ### 数据安全
 - 运行更新前自动备份
 - 支持"删除上一条记录"撤销操作
-- 所有脚本操作都有错误处理，不会覆盖现有数据
+- 缓存采用“版本化快照 + latest 指针”，可追溯每次重算来源
+- 报告写入 `source_cache_fingerprint`，Notion 推送前强制一致性校验
+- 若报告与缓存指纹或步数不一致，系统将拒绝推送/预览
 
 ---
 
@@ -532,6 +587,12 @@ python scripts/notion_health_sync.py push-latest \
   --data-dir "<SKILL目录>/data"
 ```
 
+一致性要求：
+- 仅允许推送包含 `source_cache_fingerprint` 的新报告。
+- 推送前校验“报告指纹 == 当前 active cache 指纹”。
+- 推送前校验“报告步数 == source cache 步数”。
+- 任一校验失败，必须拒绝推送，不可人工覆盖。
+
 ### 10.3 Notion 页面模板结构
 
 生成的 Notion 页面包含以下结构化板块：
@@ -569,6 +630,58 @@ python scripts/notion_health_sync.py preview \
 
 ---
 
+## 11. 强制执行约束（防止模型自作主张）
+
+以下规则为**硬约束**，违反任一条即视为失败执行：
+
+### 11.1 禁止项
+
+1. 禁止新增任何“临时计算脚本”用于步数/健康指标重算。
+2. 禁止在对话中手动估算、口算或推断步数（如“取两个设备最大值”）替代引擎结果。
+3. 禁止在 `fetch` 失败后继续输出“最终步数/TDEE”等结论。
+4. 禁止绕过 `health_metrics_engine.py` 直接写入 `health_cache_*.json`。
+
+### 11.2 唯一允许的计算路径
+
+步数与健康指标必须且仅能通过以下路径生成：
+
+```bash
+python scripts/health_data_sync.py fetch \
+  --period day \
+  --target-date <YYYY-MM-DD> \
+  --data-dir <SKILL目录>/data
+```
+
+说明：
+- `health_data_sync.py` 负责同步与调用引擎；
+- `health_metrics_engine.py` 是唯一计算核心；
+- `summary_report.py` / `notion_health_sync.py` 只能读取结果，不能改写口径。
+
+### 11.3 输出前必检（无证据不准报数）
+
+在向用户回复“最终步数/最终健康指标”之前，必须同时提供并核对：
+
+1. `source_cache_path`
+2. `source_cache_fingerprint`
+3. `metrics.daily_activity.<date>.total_steps`
+
+若任一项缺失，必须返回失败，不得输出数值结论。
+
+### 11.4 失败返回模板（必须原样使用）
+
+当授权失败、下载失败、缓存缺失或一致性校验失败时，统一返回：
+
+```text
+❌ 计算失败：未获得可验证的 source cache 结果。
+原因：<具体错误>
+已执行：<命令或步骤>
+下一步：请先完成 OAuth 授权并重新运行 fetch。
+```
+
+禁止在该场景下补充任何“估算步数/保守值/手工修正值”。
+
+---
+
 ## 重要注意事项
 
 1. **图片识别**：使用你自身的多模态视觉能力来识别食物，不依赖外部API
@@ -578,3 +691,4 @@ python scripts/notion_health_sync.py preview \
 5. **脚本路径**：始终使用此 SKILL 目录作为脚本和数据的基础路径
 6. **Google Drive 授权**：首次使用前需运行 `gdrive_auth.py auth` 完成 OAuth 授权
 7. **多设备去重**：步数数据自动去重，无需手动干预
+8. **禁止口头修正**：未通过 source cache 证据校验时，禁止给出最终数值

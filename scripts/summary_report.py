@@ -57,6 +57,16 @@ def _resolve_active_cache_path(dd, period_key, end_date_str):
                 return candidate
     return canonical
 
+
+def _cache_step_stats(metrics, target_dates):
+    activity = metrics.get("daily_activity", {}) if isinstance(metrics, dict) else {}
+    step_values = [int(activity[d].get("total_steps", 0)) for d in target_dates if d in activity]
+    return {
+        "avg_steps": round(sum(step_values) / len(step_values), 1) if step_values else 0,
+        "max_steps": max(step_values) if step_values else 0,
+        "step_values": step_values,
+    }
+
 def save_json(fp, data):
     tmp = fp.with_suffix('.tmp')
     with open(tmp,'w',encoding='utf-8') as f: json.dump(data,f,ensure_ascii=False,indent=2)
@@ -569,6 +579,23 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
         metrics=metrics if cache_path.exists() else {},
     )
 
+    # 硬约束: 报告中的步数必须与 source cache 完全一致，防止被解释层覆盖。
+    step_stats = _cache_step_stats(metrics if cache_path.exists() else {}, target_dates)
+    report_avg = objective_payload.get("activity", {}).get("avg_steps", 0)
+    report_max = objective_payload.get("activity", {}).get("max_steps", 0)
+    if int(report_avg) != int(step_stats["avg_steps"]) or int(report_max) != int(step_stats["max_steps"]):
+        result = {
+            "status": "error",
+            "message": "步数一致性校验失败：报告步数与 source cache 不一致，已拒绝生成。",
+            "cache_avg_steps": step_stats["avg_steps"],
+            "cache_max_steps": step_stats["max_steps"],
+            "report_avg_steps": report_avg,
+            "report_max_steps": report_max,
+            "cache_path": str(cache_path) if cache_path.exists() else None,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
     cache_fingerprint = None
     if cache_path.exists():
         cache_fingerprint = ext_data.get("cache_meta", {}).get("cache_fingerprint")
@@ -590,6 +617,8 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
         "days_tracked": diet_summary.get("days_with_data", 0),
         "source_cache_path": str(cache_path) if cache_path.exists() else None,
         "source_cache_fingerprint": cache_fingerprint,
+        "source_cache_step_avg": step_stats["avg_steps"],
+        "source_cache_step_max": step_stats["max_steps"],
         "llm_objective_input": objective_payload,
         "report_markdown": report,
     }
