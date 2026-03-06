@@ -608,6 +608,9 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
     lines.append(json.dumps(objective_payload, ensure_ascii=False, indent=2))
     lines.append("```")
 
+    lines.append("\n## 💡 AI 洞察与建议")
+    lines.append("*(请在此处填入基于客观数据的个性化建议)*")
+
     report = "\n".join(lines)
     payload = {
         "status": "success",

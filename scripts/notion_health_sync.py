@@ -337,19 +337,61 @@ def _metric_card(emoji, label, value, sub_text="", bg_color="blue_background") -
 # ═══════════════════════ Markdown 解析器 ═══════════════════════
 
 def markdown_to_notion_blocks(markdown_text: str) -> list:
-    """将 Markdown 纯文本解析为基础 Notion blocks。"""
-    blocks = []
+    """
+    将 Markdown 纯文本解析为基础 Notion blocks。
+    支持将 ## (二级标题) 和 ### (三级标题) 解析为可折叠块 (Toggleable Heading)，
+    并将跟随内容的嵌套到该折叠块内，直到遇到同级或更高级的标题。
+    """
     lines = markdown_text.split("\n")
+    
+    # 辅助栈，用于处理标题的嵌套层次
+    # 栈中元素结构: {"level": int, "block": dict}
+    # root level = 0
+    stack = [{"level": 0, "children": []}]
+    
     in_code_block = False
     code_content = []
     code_lang = "plain text"
+
+    def add_block(block):
+        # 始终将其添加到当前栈顶块的 children 中
+        if "children" not in stack[-1]:
+            stack[-1]["children"] = []
+        stack[-1]["children"].append(block)
+
+    def process_heading(level, text):
+        # 折叠所有级别大于等于当前级别的层级
+        while len(stack) > 1 and stack[-1]["level"] >= level:
+            popped = stack.pop()
+            if "children" in popped and popped["children"]:
+                # Notion API 规定：对于 heading_2 等，children 应放在 blocks 对象本身
+                block_key = f"heading_{popped['level']}"
+                if block_key in popped["block"]:
+                    popped["block"][block_key]["is_toggleable"] = True
+                    # Notion API 不直接在 heading 里面放 children 字段，而是在与 object 评级的层级
+                    popped["block"]["has_children"] = True
+                    # 注意：并不是所有API版本都支持折叠标题内嵌 children (通常是创建时连同 children 一起传)
+                    # 我们需要将 children 直接挂在父级字典
+                    popped["block"]["children"] = popped["children"]
+
+        # 创建新的 heading block
+        # is_toggleable 为 True 的前提下允许传入 children
+        # 但如果是 1 级标题，我们在这里不设置 toggle（保持不折叠，如果想折叠可改为True）
+        is_toggleable = level in (2, 3) 
+        block = _heading(level, text, toggleable=is_toggleable)
+        
+        add_block(block)
+        
+        # 如果是可折叠标题，将其入栈，作为后续内容的父节点
+        if is_toggleable:
+            stack.append({"level": level, "block": block, "children": []})
 
     for line in lines:
         stripped = line.strip()
         
         if stripped.startswith("```"):
             if in_code_block:
-                blocks.append(_code_block("\n".join(code_content), code_lang))
+                add_block(_code_block("\n".join(code_content), code_lang))
                 code_content = []
                 in_code_block = False
             else:
@@ -363,28 +405,34 @@ def markdown_to_notion_blocks(markdown_text: str) -> list:
             continue
             
         if not stripped:
-            blocks.append(_paragraph(""))
+            add_block(_paragraph(""))
             continue
             
         if stripped.startswith("# "):
-            blocks.append(_heading(1, stripped[2:].strip()))
+            process_heading(1, stripped[2:].strip())
         elif stripped.startswith("## "):
-            blocks.append(_heading(2, stripped[3:].strip()))
+            process_heading(2, stripped[3:].strip())
         elif stripped.startswith("### "):
-            blocks.append(_heading(3, stripped[4:].strip()))
+            process_heading(3, stripped[4:].strip())
         elif stripped.startswith("- ") or stripped.startswith("* "):
-            blocks.append(_bulleted(stripped[2:].strip()))
+            add_block(_bulleted(stripped[2:].strip()))
         elif stripped[0].isdigit() and stripped.startswith(stripped.split()[0]) and stripped.split()[0].endswith("."):
-            blocks.append(_numbered(stripped[stripped.find(".")+1:].strip()))
+            add_block(_numbered(stripped[stripped.find(".")+1:].strip()))
         elif stripped.startswith("> "):
-            blocks.append(_quote(stripped[2:].strip()))
+            add_block(_quote(stripped[2:].strip()))
         else:
-            blocks.append(_paragraph(stripped))
+            add_block(_paragraph(stripped))
             
     if in_code_block:
-        blocks.append(_code_block("\n".join(code_content), code_lang))
-        
-    return blocks
+        add_block(_code_block("\n".join(code_content), code_lang))
+
+    # 收尾，处理所有仍在栈中的元素
+    while len(stack) > 1:
+        popped = stack.pop()
+        if "children" in popped and popped["children"]:
+            popped["block"]["children"] = popped["children"]
+
+    return stack[0]["children"]
 
 def build_notion_page_blocks(report_json: dict, cache_json: dict = None) -> list:
     """提取报告中的 report_markdown 并将其简易转成 Notion blocks。"""
