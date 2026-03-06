@@ -3,7 +3,7 @@
 Minimal regression test for the energy uncertainty pipeline:
 1) health_metrics_engine output
 2) summary_report merged JSON payload
-3) notion_health_sync preview blocks
+2) summary_report merged JSON payload
 """
 
 import argparse
@@ -154,39 +154,9 @@ def main():
         "active_burn_confidence_labels",
     ], "Merged report llm_objective_input.energy")
 
-    print("[STEP 3] Checking Notion preview includes uncertainty context...")
-    cmd_preview = [
-        sys.executable,
-        str(scripts_dir / "notion_health_sync.py"),
-        "preview",
-        "--report-file",
-        str(output_path),
-        "--data-dir",
-        str(data_dir),
-    ]
-    proc_preview = subprocess.run(
-        cmd_preview,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if proc_preview.returncode != 0:
-        _fail(f"notion_health_sync.py preview failed: {proc_preview.stderr.strip()}")
-
-    preview_path = data_dir / "notion_template_preview.json"
-    if not preview_path.exists():
-        _fail(f"Notion preview file not found: {preview_path}")
-
-    blocks = _load_json(preview_path)
-    all_text = "\n".join(_iter_text(blocks))
-    if "置信度" not in all_text and "心率回退估算" not in all_text:
-        _fail("Notion preview does not contain uncertainty/estimation text")
-
     print("[PASS] End-to-end regression checks passed")
     print(f"  date: {args.date}")
     print(f"  report_json: {output_path}")
-    print(f"  notion_preview: {preview_path}")
 
 
 if __name__ == "__main__":
