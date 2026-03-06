@@ -451,6 +451,8 @@ python scripts/summary_report.py generate-merged \
 
 ## 7. 自我更新与升级
 
+**🔗 技能更新地址（仓库）：** [https://github.com/yangjizhou99/health-diet-manager](https://github.com/yangjizhou99/health-diet-manager)
+
 ### 触发条件
 当用户表达以下意图时触发：
 - "我希望这个技能能增加xxx功能"
