@@ -1,0 +1,86 @@
+{
+  "status": "success",
+  "period": "day",
+  "target_date": "2026-03-08",
+  "metrics": {
+    "cardiovascular_health": {
+      "baseline": {
+        "estimated_rhr": 57,
+        "observed_peak_hr": 168,
+        "zonal_thresholds": {
+          "Zone2": "118-138",
+          "Zone3": "139-156"
+        }
+      },
+      "inferred_workouts": [
+        {
+          "start": "2026-03-08 18:35:00",
+          "end": "2026-03-08 19:05:00",
+          "duration_minutes": 30,
+          "avg_hr": 142,
+          "peak_hr": 165
+        }
+      ],
+      "total_exercise_minutes_zone2_plus": 36
+    },
+    "sleep_recovery": {
+      "2026-03-08": {
+        "total_sleep_hours": 7.8,
+        "deep_sleep_ratio": 0.23,
+        "rem_ratio": 0.21,
+        "sleep_efficiency": 0.9,
+        "awake_interruptions_mins": 18
+      }
+    },
+    "body_composition": {
+      "2026-03-08": {
+        "weight_kg": 72.0,
+        "body_fat_pct": 18.4,
+        "skeletal_muscle_kg": 33.1,
+        "bmr_kcal": 1638,
+        "muscle_fat_ratio": 1.8,
+        "smi_kg_m2": 7.9
+      }
+    },
+    "daily_activity": {
+      "2026-03-08": {
+        "total_steps": 9820,
+        "sedentary_3h_blocks_count": 2,
+        "fast_walks": [
+          {
+            "start": "2026-03-08 07:20:00",
+            "end": "2026-03-08 07:45:00",
+            "duration_minutes": 25,
+            "total_steps": 2650,
+            "max_steps_per_min": 132
+          },
+          {
+            "start": "2026-03-08 18:30:00",
+            "end": "2026-03-08 19:10:00",
+            "duration_minutes": 40,
+            "total_steps": 4160,
+            "max_steps_per_min": 141
+          }
+        ]
+      }
+    },
+    "energy_expenditure": {
+      "2026-03-08": {
+        "resting_burn_kcal": 1625,
+        "active_burn_kcal": 690,
+        "active_burn_kcal_low": 620,
+        "active_burn_kcal_high": 760,
+        "tdee_kcal": 2315,
+        "tdee_kcal_low": 2245,
+        "tdee_kcal_high": 2385,
+        "active_burn_source": "wearable_recorded",
+        "active_burn_confidence_label": "medium"
+      }
+    }
+  },
+  "cache_meta": {
+    "cache_fingerprint": "demo_fingerprint_20260308_daily",
+    "cache_generated_at": "2026-03-08T20:20:00",
+    "cache_file": "health_cache_day_2026-03-08.json"
+  }
+}

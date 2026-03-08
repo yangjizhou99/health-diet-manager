@@ -1,0 +1,38 @@
+{
+  "records": [
+    {
+      "date": "2026-03-08",
+      "meal_type": "breakfast",
+      "totals": {
+        "calories": 620,
+        "protein": 32,
+        "carbs": 68,
+        "fat": 20,
+        "fiber": 8,
+        "sodium": 520
+      },
+      "foods": [
+        {"name": "燕麦牛奶"},
+        {"name": "鸡蛋"},
+        {"name": "蓝莓"}
+      ]
+    },
+    {
+      "date": "2026-03-08",
+      "meal_type": "dinner",
+      "totals": {
+        "calories": 980,
+        "protein": 52,
+        "carbs": 104,
+        "fat": 35,
+        "fiber": 13,
+        "sodium": 980
+      },
+      "foods": [
+        {"name": "糙米饭"},
+        {"name": "清炒西兰花"},
+        {"name": "鸡胸肉"}
+      ]
+    }
+  ]
+}

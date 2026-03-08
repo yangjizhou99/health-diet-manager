@@ -1,0 +1,13 @@
+{
+  "frequency": "daily",
+  "time": "20:00",
+  "enabled": true,
+  "auto_llm_advice": true,
+  "strict_real_data": false,
+  "llm_advice_file": "./demo_data/demo_advice_daily.json",
+  "push_notion": false,
+  "updated_at": "2026-03-08T13:24:52.837440",
+  "last_run_at": "2026-03-08T20:15:00",
+  "last_report_json_path": "demo_data\\reports\\health_report_daily_2026-03-08_to_2026-03-08_132452.json",
+  "last_report_markdown_path": "demo_data\\reports\\health_report_daily_2026-03-08_to_2026-03-08_132452.md"
+}

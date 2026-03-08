@@ -1,0 +1,61 @@
+{
+  "name": "Demo User",
+  "daily_targets": {
+    "calories": 2100,
+    "protein": 110,
+    "carbs": 260,
+    "fat": 65,
+    "fiber": 30
+  },
+  "weight_history": [
+    {
+      "date": "2026-03-01",
+      "weight": 72.4
+    },
+    {
+      "date": "2026-03-08",
+      "weight": 72.0
+    }
+  ],
+  "activity": "中度活动",
+  "weight": 72.0,
+  "goal": "减脂",
+  "inferred_profile": {
+    "latest_body_fat_pct": 18.4,
+    "latest_smi_kg_m2": 7.9,
+    "avg_steps_30d": 9820.0,
+    "avg_intake_kcal_30d": 1600.0,
+    "avg_tdee_kcal_30d": 2315.0,
+    "meal_type_distribution_30d": {
+      "breakfast": 1,
+      "dinner": 1
+    },
+    "top_foods_30d": [
+      {
+        "name": "燕麦牛奶",
+        "count": 1
+      },
+      {
+        "name": "鸡蛋",
+        "count": 1
+      },
+      {
+        "name": "蓝莓",
+        "count": 1
+      },
+      {
+        "name": "糙米饭",
+        "count": 1
+      },
+      {
+        "name": "清炒西兰花",
+        "count": 1
+      },
+      {
+        "name": "鸡胸肉",
+        "count": 1
+      }
+    ]
+  },
+  "updated_at": "2026-03-08T13:24:34.365214"
+}

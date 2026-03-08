@@ -1,0 +1,216 @@
+{
+  "status": "success",
+  "report_type": "daily",
+  "period": "2026-03-08 ~ 2026-03-08",
+  "is_merged": true,
+  "days_tracked": 1,
+  "source_cache_path": "demo_data\\health_cache_day_2026-03-08.json",
+  "source_cache_fingerprint": "demo_fingerprint_20260308_daily",
+  "source_cache_step_avg": 9820.0,
+  "source_cache_step_max": 9820,
+  "data_completeness": {
+    "diet_days_with_data": 1,
+    "period_days": 1,
+    "total_meals_logged": 2,
+    "total_food_items_logged": 6,
+    "external_cache_exists": true,
+    "external_cache_status": "success"
+  },
+  "llm_generated_advice": [
+    "依据数据：今日总摄入 1600 kcal，较 TDEE 2315 kcal 低 715 kcal；执行动作：晚餐后补充 1 份高蛋白加餐（如无糖酸奶+坚果）；执行频次：今日执行；预期变化：将热量缺口收敛到 -400 kcal 内；风险与备注：若夜间饥饿明显，优先补蛋白而非精制碳水。",
+    "依据数据：久坐 block 为 2 且日均步数虽达 9820 但集中在晚间；执行动作：下午增加 2 次 10 分钟步行中断；执行频次：工作日每天；预期变化：降低久坐暴露并平滑血糖波动；风险与备注：以轻强度为主，避免影响晚间训练恢复。",
+    "依据数据：睡眠 7.8h、深睡 23%、睡眠效率 90%；执行动作：保持当前入睡窗口并将睡前高盐食物后移到晚餐早段；执行频次：未来 3 天连续执行；预期变化：维持恢复质量并减少夜间觉醒；风险与备注：若心率晨起上升 >5 bpm，次日训练下调强度。"
+  ],
+  "llm_advice_meta": {
+    "source": "file",
+    "path": "./demo_data/demo_advice_daily.json",
+    "generated_count": 3
+  },
+  "llm_objective_input": {
+    "report_period": {
+      "type": "daily",
+      "start": "2026-03-08",
+      "end": "2026-03-08",
+      "days": 1
+    },
+    "diet": {
+      "days_with_records": 1,
+      "avg_daily": {
+        "calories": 1600.0,
+        "protein": 84.0,
+        "carbs": 172.0,
+        "fat": 55.0,
+        "fiber": 21.0,
+        "sodium": 1500.0
+      },
+      "avg_intake_kcal": 1600.0,
+      "target_daily": {
+        "calories": 2100,
+        "protein": 110,
+        "carbs": 260,
+        "fat": 65,
+        "fiber": 30
+      },
+      "diet_balance_score": 50,
+      "top_foods": [
+        {
+          "name": "燕麦牛奶",
+          "count": 1
+        },
+        {
+          "name": "鸡蛋",
+          "count": 1
+        },
+        {
+          "name": "蓝莓",
+          "count": 1
+        },
+        {
+          "name": "糙米饭",
+          "count": 1
+        },
+        {
+          "name": "清炒西兰花",
+          "count": 1
+        },
+        {
+          "name": "鸡胸肉",
+          "count": 1
+        }
+      ]
+    },
+    "activity": {
+      "avg_steps": 9820.0,
+      "max_steps": 9820,
+      "total_sedentary_3h_blocks": 2
+    },
+    "sleep": {
+      "avg_sleep_hours": 7.8,
+      "avg_deep_sleep_ratio": 0.23,
+      "total_awake_interruptions_minutes": 18
+    },
+    "cardiovascular": {
+      "estimated_rhr": 57,
+      "observed_peak_hr": 168,
+      "inferred_workout_count": 1,
+      "total_exercise_minutes_zone2_plus": 36
+    },
+    "energy": {
+      "avg_tdee_kcal": 2315.0,
+      "avg_tdee_kcal_low": 2245.0,
+      "avg_tdee_kcal_high": 2385.0,
+      "avg_active_burn_kcal": 690.0,
+      "avg_active_burn_kcal_low": 620.0,
+      "avg_active_burn_kcal_high": 760.0,
+      "avg_resting_burn_kcal": 1625.0,
+      "avg_intake_minus_tdee_kcal": -715.0,
+      "estimated_from_hr_days": 0,
+      "active_burn_confidence_labels": [
+        "medium"
+      ]
+    },
+    "body_composition_latest": {
+      "weight_kg": 72.0,
+      "body_fat_pct": 18.4,
+      "skeletal_muscle_kg": 33.1,
+      "bmr_kcal": 1638,
+      "muscle_fat_ratio": 1.8,
+      "smi_kg_m2": 7.9
+    },
+    "personal_context": {
+      "profile": {
+        "gender": null,
+        "age": null,
+        "height_cm": null,
+        "current_weight_kg": null,
+        "activity_level": null,
+        "goal": null,
+        "bmr_kcal": null,
+        "tdee_kcal": null
+      },
+      "custom_context": {},
+      "nutrition_trend": {
+        "avg_calories_7d": 1600.0,
+        "avg_calories_30d": 1600.0,
+        "avg_protein_7d": 84.0,
+        "avg_fiber_7d": 21.0,
+        "avg_sodium_7d": 1500.0
+      },
+      "weight_trend": {
+        "delta_7d_kg": null,
+        "delta_30d_kg": -0.4,
+        "latest_weight_from_history": 72.0
+      },
+      "behavior_patterns": {
+        "meal_type_distribution": {
+          "breakfast": 1,
+          "dinner": 1
+        },
+        "top_foods_7d": [
+          {
+            "name": "燕麦牛奶",
+            "count": 1
+          },
+          {
+            "name": "鸡蛋",
+            "count": 1
+          },
+          {
+            "name": "蓝莓",
+            "count": 1
+          },
+          {
+            "name": "糙米饭",
+            "count": 1
+          },
+          {
+            "name": "清炒西兰花",
+            "count": 1
+          },
+          {
+            "name": "鸡胸肉",
+            "count": 1
+          }
+        ],
+        "top_foods_30d": [
+          {
+            "name": "燕麦牛奶",
+            "count": 1
+          },
+          {
+            "name": "鸡蛋",
+            "count": 1
+          },
+          {
+            "name": "蓝莓",
+            "count": 1
+          },
+          {
+            "name": "糙米饭",
+            "count": 1
+          },
+          {
+            "name": "清炒西兰花",
+            "count": 1
+          },
+          {
+            "name": "鸡胸肉",
+            "count": 1
+          }
+        ]
+      },
+      "recovery_activity_context": {
+        "avg_steps_in_window": 9820.0,
+        "max_steps_in_window": 9820,
+        "avg_sleep_hours_in_window": 7.8,
+        "avg_tdee_in_window": 2315.0
+      },
+      "data_gaps": [
+        "缺少年龄",
+        "缺少身高",
+        "缺少目标类型"
+      ]
+    }
+  },
+  "report_markdown": "# 🧬 综合健康日报 (2026-03-08 ~ 2026-03-08)\n\n## 报告概览\n- 报告类型: 综合健康日报\n- 覆盖日期: 2026-03-08 ~ 2026-03-08\n- 报告性质: 饮食记录与外部健康数据联合分析\n- 饮食数据来源: demo_data\\daily_log.json\n- 外部健康缓存: demo_data\\health_cache_day_2026-03-08.json\n- strict_real_data: false\n\n## 数据完整度与可信度说明\n- 饮食记录天数: 1/1\n- 已记录餐次: 2\n- 已记录食物条目: 6\n- 外部健康缓存状态: success\n- 外部健康缓存生成时间: 2026-03-08T20:20:00\n- 外部健康缓存指纹: demo_fingerprint_20260308_daily\n- 能量数据置信度: medium\n- 能量数据来源: wearable_recorded\n\n## 饮食分析\n| 指标 | 摄入 | 目标 | 达标率 | 状态 |\n|------|------|------|--------|------|\n| 热量(kcal) | 1600.0 | 2100 | 76% | 偏低 |\n| 蛋白质(g) | 84.0 | 110 | 76% | 偏低 |\n| 碳水(g) | 172.0 | 260 | 66% | 偏低 |\n| 脂肪(g) | 55.0 | 65 | 85% | 达标 |\n| 纤维(g) | 21.0 | 30 | 70% | 偏低 |\n\n- 饮食均衡评分: 50/100\n- 总摄入热量: 1600 kcal\n- 高频食物: 燕麦牛奶(1次)、鸡蛋(1次)、蓝莓(1次)、糙米饭(1次)、清炒西兰花(1次)、鸡胸肉(1次)\n- 当日食物明细: 燕麦牛奶、鸡蛋、蓝莓、糙米饭、清炒西兰花、鸡胸肉\n\n## 活动与步数分析\n- 统计天数: 1\n- 总步数: 9820\n- 日均步数: 9820.0\n- 最高单日步数: 9820\n- 久坐 block 数: 2\n- 快走片段: 2 段, 累计 65 分钟\n  - 2026-03-08 07:20:00 ~ 2026-03-08 07:45:00 | 25 分钟 | 2650 步 | 峰值 132 步/分\n  - 2026-03-08 18:30:00 ~ 2026-03-08 19:10:00 | 40 分钟 | 4160 步 | 峰值 141 步/分\n\n## 睡眠恢复分析\n- 平均睡眠时长: 7.80 小时\n- 平均深睡比例: 23.0%\n- 平均 REM 比例: 21.0%\n- 平均睡眠效率: 90.0%\n- 清醒打断总时长: 18.0 分钟\n- 当日睡眠摘要: 7.80 小时 | 深睡 23.0% | REM 21.0% | 效率 90.0%\n\n## 心率与运动分析\n- 静息心率基线: 57 bpm\n- 观测峰值心率: 168 bpm\n- Zone2 阈值: 118-138\n- Zone3 阈值: 139-156\n- 推测运动次数: 1\n- Zone2+ 总运动时长: 36 分钟\n  - 2026-03-08 18:35:00 ~ 2026-03-08 19:05:00 | 30 分钟 | 平均 HR 142 | 峰值 HR 165\n\n## 能量收支分析\n- 平均静息消耗: 1625.0 kcal\n- 平均活动消耗: 690.0 kcal\n- 平均 TDEE: 2315.0 kcal\n- TDEE 区间: 2245.0 ~ 2385.0 kcal\n- 活动消耗区间: 620.0 ~ 760.0 kcal\n- 活动消耗置信度: medium\n- 摄入减 TDEE: -715.0 kcal\n\n## 体成分概览\n- 取值日期: 2026-03-08\n- 体重: 72.0 kg\n- 体脂率: 18.4 %\n- 骨骼肌: 33.1 kg\n- BMR: 1638 kcal\n- 肌肉/脂肪比: 1.8\n- SMI: 7.9\n\n## 关键异常与亮点\n- 活动量尚可: 最高单日步数 9820\n- 久坐暴露存在: 2 个长时久坐 block\n- 睡眠时长充足: 平均 7.80 小时\n- 深睡占比表现不错: 平均 23.0%\n- 热量收支偏离较大: 摄入减 TDEE = -715.0 kcal\n\n## 行动建议\n- 建议 1：依据数据：今日总摄入 1600 kcal，较 TDEE 2315 kcal 低 715 kcal；执行动作：晚餐后补充 1 份高蛋白加餐（如无糖酸奶+坚果）；执行频次：今日执行；预期变化：将热量缺口收敛到 -400 kcal 内；风险与备注：若夜间饥饿明显，优先补蛋白而非精制碳水。\n- 建议 2：依据数据：久坐 block 为 2 且日均步数虽达 9820 但集中在晚间；执行动作：下午增加 2 次 10 分钟步行中断；执行频次：工作日每天；预期变化：降低久坐暴露并平滑血糖波动；风险与备注：以轻强度为主，避免影响晚间训练恢复。\n- 建议 3：依据数据：睡眠 7.8h、深睡 23%、睡眠效率 90%；执行动作：保持当前入睡窗口并将睡前高盐食物后移到晚餐早段；执行频次：未来 3 天连续执行；预期变化：维持恢复质量并减少夜间觉醒；风险与备注：若心率晨起上升 >5 bpm，次日训练下调强度。\n\n## 🤖 建议生成输入（客观数据）\n以下为原始客观指标，由大模型基于这些数据生成个性化建议。\n```json\n{\n  \"report_period\": {\n    \"type\": \"daily\",\n    \"start\": \"2026-03-08\",\n    \"end\": \"2026-03-08\",\n    \"days\": 1\n  },\n  \"diet\": {\n    \"days_with_records\": 1,\n    \"avg_daily\": {\n      \"calories\": 1600.0,\n      \"protein\": 84.0,\n      \"carbs\": 172.0,\n      \"fat\": 55.0,\n      \"fiber\": 21.0,\n      \"sodium\": 1500.0\n    },\n    \"avg_intake_kcal\": 1600.0,\n    \"target_daily\": {\n      \"calories\": 2100,\n      \"protein\": 110,\n      \"carbs\": 260,\n      \"fat\": 65,\n      \"fiber\": 30\n    },\n    \"diet_balance_score\": 50,\n    \"top_foods\": [\n      {\n        \"name\": \"燕麦牛奶\",\n        \"count\": 1\n      },\n      {\n        \"name\": \"鸡蛋\",\n        \"count\": 1\n      },\n      {\n        \"name\": \"蓝莓\",\n        \"count\": 1\n      },\n      {\n        \"name\": \"糙米饭\",\n        \"count\": 1\n      },\n      {\n        \"name\": \"清炒西兰花\",\n        \"count\": 1\n      },\n      {\n        \"name\": \"鸡胸肉\",\n        \"count\": 1\n      }\n    ]\n  },\n  \"activity\": {\n    \"avg_steps\": 9820.0,\n    \"max_steps\": 9820,\n    \"total_sedentary_3h_blocks\": 2\n  },\n  \"sleep\": {\n    \"avg_sleep_hours\": 7.8,\n    \"avg_deep_sleep_ratio\": 0.23,\n    \"total_awake_interruptions_minutes\": 18\n  },\n  \"cardiovascular\": {\n    \"estimated_rhr\": 57,\n    \"observed_peak_hr\": 168,\n    \"inferred_workout_count\": 1,\n    \"total_exercise_minutes_zone2_plus\": 36\n  },\n  \"energy\": {\n    \"avg_tdee_kcal\": 2315.0,\n    \"avg_tdee_kcal_low\": 2245.0,\n    \"avg_tdee_kcal_high\": 2385.0,\n    \"avg_active_burn_kcal\": 690.0,\n    \"avg_active_burn_kcal_low\": 620.0,\n    \"avg_active_burn_kcal_high\": 760.0,\n    \"avg_resting_burn_kcal\": 1625.0,\n    \"avg_intake_minus_tdee_kcal\": -715.0,\n    \"estimated_from_hr_days\": 0,\n    \"active_burn_confidence_labels\": [\n      \"medium\"\n    ]\n  },\n  \"body_composition_latest\": {\n    \"weight_kg\": 72.0,\n    \"body_fat_pct\": 18.4,\n    \"skeletal_muscle_kg\": 33.1,\n    \"bmr_kcal\": 1638,\n    \"muscle_fat_ratio\": 1.8,\n    \"smi_kg_m2\": 7.9\n  },\n  \"personal_context\": {\n    \"profile\": {\n      \"gender\": null,\n      \"age\": null,\n      \"height_cm\": null,\n      \"current_weight_kg\": null,\n      \"activity_level\": null,\n      \"goal\": null,\n      \"bmr_kcal\": null,\n      \"tdee_kcal\": null\n    },\n    \"custom_context\": {},\n    \"nutrition_trend\": {\n      \"avg_calories_7d\": 1600.0,\n      \"avg_calories_30d\": 1600.0,\n      \"avg_protein_7d\": 84.0,\n      \"avg_fiber_7d\": 21.0,\n      \"avg_sodium_7d\": 1500.0\n    },\n    \"weight_trend\": {\n      \"delta_7d_kg\": null,\n      \"delta_30d_kg\": -0.4,\n      \"latest_weight_from_history\": 72.0\n    },\n    \"behavior_patterns\": {\n      \"meal_type_distribution\": {\n        \"breakfast\": 1,\n        \"dinner\": 1\n      },\n      \"top_foods_7d\": [\n        {\n          \"name\": \"燕麦牛奶\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"鸡蛋\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"蓝莓\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"糙米饭\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"清炒西兰花\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"鸡胸肉\",\n          \"count\": 1\n        }\n      ],\n      \"top_foods_30d\": [\n        {\n          \"name\": \"燕麦牛奶\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"鸡蛋\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"蓝莓\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"糙米饭\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"清炒西兰花\",\n          \"count\": 1\n        },\n        {\n          \"name\": \"鸡胸肉\",\n          \"count\": 1\n        }\n      ]\n    },\n    \"recovery_activity_context\": {\n      \"avg_steps_in_window\": 9820.0,\n      \"max_steps_in_window\": 9820,\n      \"avg_sleep_hours_in_window\": 7.8,\n      \"avg_tdee_in_window\": 2315.0\n    },\n    \"data_gaps\": [\n      \"缺少年龄\",\n      \"缺少身高\",\n      \"缺少目标类型\"\n    ]\n  }\n}\n```"
+}

@@ -297,38 +297,28 @@ class BodyCompositionAnalyzer:
         return reports
 
 class ActivityAnalyzer:
-    """日常步数分布数据计算 (支持多设备15分钟窗口去重)"""
+    """日常步数分布数据计算 (支持多设备时间序列去重)"""
 
     @staticmethod
-    def _dedup_steps(group):
-        """多设备步数去重: 按15分钟窗口, 重叠取max, 非重叠直接保留"""
+    def _build_dedup_step_series(group):
         has_source = 'source' in group.columns
         sources = group['source'].unique() if has_source else []
         if not has_source or len(sources) <= 1:
-            return int(group['步数'].sum())
+            return group.groupby('Datetime')['步数'].max().resample('1min').sum().fillna(0)
 
-        # 按来源分别 resample 到 15 分钟窗口求和
-        # 先对同源数据按时间戳去重 (处理重复CSV文件), 保留较大值
         per_source = {}
         for src in sources:
             src_data = group[group['source'] == src][['Datetime', '步数']]
             src_data = src_data.groupby('Datetime')['步数'].max()
-            per_source[src] = src_data.resample('15min').sum()
+            per_source[src] = src_data.resample('1min').sum()
 
-        # 对齐所有来源到相同的时间索引
         all_idx = per_source[sources[0]].index
         for src in sources[1:]:
             all_idx = all_idx.union(per_source[src].index)
 
         aligned = {src: s.reindex(all_idx, fill_value=0) for src, s in per_source.items()}
         merged = pd.DataFrame(aligned)
-
-        # 每个窗口: 多源有数据取 max, 单源直接用
-        total = 0
-        for _, row in merged.iterrows():
-            vals = [v for v in row if v > 0]
-            total += max(vals) if vals else 0
-        return int(total)
+        return merged.max(axis=1).fillna(0)
 
     def analyze(self, steps_df):
         if steps_df.empty:
@@ -337,15 +327,12 @@ class ActivityAnalyzer:
         steps_df['Date'] = steps_df['Datetime'].dt.date
         reports = {}
         for date, group in steps_df.groupby('Date'):
-            total_steps = self._dedup_steps(group)
-            
-            # 计算久坐中断 (连续3小时步数 < 100)
-            group_dt = group.set_index('Datetime')
-            resampled_3h = group_dt['步数'].resample('3h').sum()
+            dedup_1min = self._build_dedup_step_series(group)
+            total_steps = int(dedup_1min.sum())
+            resampled_3h = dedup_1min.resample('3h').sum()
             sedentary_blocks = int((resampled_3h < 100).sum())
-            
-            # 推算高频快走 (连续5分钟以上，每分钟>=100步)
-            resampled_1min = group_dt['步数'].resample('1min').sum().fillna(0)
+
+            resampled_1min = dedup_1min
             fast_walks = []
             in_walk = False
             walk_start = None

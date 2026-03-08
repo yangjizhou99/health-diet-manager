@@ -51,7 +51,7 @@ def _is_google_drive_token(location):
     has_no_slashes = "/" not in location and "\\" not in location
     return (is_valid_len or location.startswith("0AIK")) and has_no_slashes and not Path(location).exists()
 
-def _download_from_drive(folder_token, dest_dir):
+def _download_from_drive(folder_token, dest_dir, token_path=None):
     """按优先级尝试多种方式从 Google Drive 下载文件夹:
     1. gog drive (自定义工具)
     2. rclone (需预先配置 remote 'gdrive')
@@ -63,14 +63,22 @@ def _download_from_drive(folder_token, dest_dir):
     # gog 需要先 `gog auth credentials <client_secret.json>` + `gog auth add <email> --services drive`
     # 使用 gog drive search 列出文件，然后逐个下载
     try:
-        gog_check = subprocess.run("gog drive search --help",
-                                   shell=True, capture_output=True, text=True, timeout=10)
+        gog_check = subprocess.run(
+            ["gog", "drive", "search", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         if gog_check.returncode == 0:
             print("检测到 gog CLI，尝试使用 gog drive 下载...", file=sys.stderr)
             import json as _json
             # 列出目标文件夹下所有文件 (递归)
-            search_cmd = f'gog drive search "\\"{folder_token}\\" in parents" --max 500 --json --no-input'
-            res = subprocess.run(search_cmd, shell=True, capture_output=True, text=True, timeout=120)
+            res = subprocess.run(
+                ["gog", "drive", "search", f'"{folder_token}" in parents', "--max", "500", "--json", "--no-input"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
             if res.returncode == 0 and res.stdout.strip():
                 items = _json.loads(res.stdout)
                 for item in items:
@@ -94,18 +102,28 @@ def _download_from_drive(folder_token, dest_dir):
     # ── 方式 2: rclone (推荐，稳定) ──
     # 需要预先运行 `rclone config` 配置一个名为 gdrive 的 remote
     try:
-        rclone_check = subprocess.run("rclone version", shell=True, capture_output=True, text=True, timeout=10)
+        rclone_check = subprocess.run(
+            ["rclone", "version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         if rclone_check.returncode == 0:
             print("检测到 rclone，尝试使用 rclone 下载...", file=sys.stderr)
             rclone_src = f"gdrive:{{id={folder_token}}}"
             res = subprocess.run(
-                f'rclone copy "{rclone_src}" "{dest_dir}" --drive-shared-with-me -P',
-                shell=True, capture_output=True, text=True, timeout=300)
+                ["rclone", "copy", rclone_src, str(dest_dir), "--drive-shared-with-me", "-P"],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
             if res.returncode == 0 and os.listdir(dest_dir):
                 print("rclone 下载成功！", file=sys.stderr)
                 return str(dest_dir)
             else:
                 print(f"rclone 失败: {res.stderr.strip()}", file=sys.stderr)
+    except FileNotFoundError:
+        print("rclone 未安装，跳过", file=sys.stderr)
     except Exception as e:
         print(f"rclone 报错: {e}", file=sys.stderr)
 
@@ -113,11 +131,13 @@ def _download_from_drive(folder_token, dest_dir):
 
     # ── 方式 3: Google Drive API + OAuth 用户凭证 (最可靠) ──
     try:
-        scripts_dir = os.path.dirname(os.path.abspath(__file__))
-        data_dir_path = os.path.join(scripts_dir, "..", "data")
-        token_path = os.path.join(data_dir_path, "gdrive_token.json")
+        if token_path is None:
+            scripts_dir = os.path.dirname(os.path.abspath(__file__))
+            data_dir_path = os.path.join(scripts_dir, "..", "data")
+            token_path = os.path.join(data_dir_path, "gdrive_token.json")
+        token_path = Path(token_path)
 
-        if os.path.exists(token_path):
+        if token_path.exists():
             print("检测到 OAuth Token，尝试 Google Drive API...", file=sys.stderr)
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request
@@ -125,10 +145,10 @@ def _download_from_drive(folder_token, dest_dir):
             from googleapiclient.http import MediaIoBaseDownload
 
             creds = Credentials.from_authorized_user_file(
-                token_path, ["https://www.googleapis.com/auth/drive.readonly"])
+                str(token_path), ["https://www.googleapis.com/auth/drive.readonly"])
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
-                Path(token_path).write_text(creds.to_json())
+                token_path.write_text(creds.to_json(), encoding="utf-8")
 
             service = build("drive", "v3", credentials=creds)
 
@@ -198,7 +218,7 @@ def _download_from_drive(folder_token, dest_dir):
                 "请确认该账号对目标文件夹有访问权限，且文件夹内包含可下载文件。"
             )
         else:
-            print(f"未找到 OAuth Token ({token_path})，跳过。首次使用请运行: "
+            print(f"未找到 OAuth Token ({str(token_path)})，跳过。首次使用请运行: "
                   f"python scripts/gdrive_auth.py auth --client-secret <path>", file=sys.stderr)
     except ImportError:
         print("未安装 google-api-python-client，跳过 Drive API 方式", file=sys.stderr)
@@ -438,7 +458,7 @@ def fetch_data(period, target_date, data_dir, strict_real_data=False):
     if _is_google_drive_token(loc):
         temp_dir = tempfile.mkdtemp(prefix="health_sync_gdrive_")
         try:
-            downloaded_dir = _download_from_drive(loc, temp_dir)
+            downloaded_dir = _download_from_drive(loc, temp_dir, token_path=dd / "gdrive_token.json")
             extracted_dir = _find_health_data_root(downloaded_dir)
             if extracted_dir is None:
                 result = _error_result(period, target_date, f"在 Google Drive 下载内容中未找到包含“健康同步 *”的目录")
