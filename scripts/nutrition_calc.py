@@ -119,7 +119,8 @@ def cmd_log_meal(a):
     try: foods=json.loads(a.foods)
     except json.JSONDecodeError as e:
         print(json.dumps({"status":"error","message":f"JSON解析失败:{e}"},ensure_ascii=False)); sys.exit(1)
-    mt={"calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sodium":0}
+    mt={"calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sodium":0,
+        "potassium":0,"calcium":0,"iron":0,"magnesium":0,"zinc":0,"vitamin_c":0}
     for f in foods:
         for k in mt: mt[k]+=f.get(k,0)
     mt={k:round(v,1) for k,v in mt.items()}
@@ -134,8 +135,11 @@ def cmd_log_meal(a):
             for k in dt: dt[k]+=r["totals"].get(k,0)
     dt={k:round(v,1) for k,v in dt.items()}
     prof=load_json(dd/"user_profile.json"); tgt=prof.get("daily_targets",{})
+    # 构造输出，只展示有值的营养素
+    display_mt = {k:v for k,v in mt.items() if v>0 or k in ["calories","protein","carbs","fat"]}
+    display_dt = {k:v for k,v in dt.items() if v>0 or k in ["calories","protein","carbs","fat"]}
     print(json.dumps({"status":"success","message":"饮食已记录","record_id":rec["id"],
-        "meal_totals":mt,"daily_totals":dt,"daily_targets":tgt},ensure_ascii=False,indent=2))
+        "meal_totals":display_mt,"daily_totals":display_dt,"daily_targets":tgt},ensure_ascii=False,indent=2))
 
 def cmd_daily_summary(a):
     dd=ensure_data_dir(a.data_dir)
@@ -145,7 +149,9 @@ def cmd_daily_summary(a):
     recs=[r for r in log["records"] if r["date"]==td]
     if not recs:
         print(json.dumps({"status":"no_data","message":f"{td}没有记录","date":td},ensure_ascii=False,indent=2)); return
-    meals={}; dt={"calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sodium":0}
+    meals={}; 
+    all_keys = ["calories","protein","carbs","fat","fiber","sodium","potassium","calcium","iron","magnesium","zinc","vitamin_c"]
+    dt={k:0 for k in all_keys}
     mn={"breakfast":"早餐","lunch":"午餐","dinner":"晚餐","snack":"加餐"}
     for r in recs:
         m=r["meal_type"]
@@ -159,6 +165,9 @@ def cmd_daily_summary(a):
         t=tgt.get(k,0); act=dt.get(k,0)
         pct=round(act/t*100) if t>0 else 0
         ns[k]={"actual":act,"target":t,"percentage":pct,"status":"normal" if 80<=pct<=120 else("low" if pct<80 else "high")}
+    # 额外营养素摘要
+    micros = {k:v for k,v in dt.items() if k not in ns and v > 0}
+    
     sc=100
     for v in ns.values():
         d=abs(v["percentage"]-100)
@@ -166,18 +175,21 @@ def cmd_daily_summary(a):
         elif d>20: sc-=10
         elif d>10: sc-=5
     print(json.dumps({"status":"success","date":td,"meals":meals,"daily_totals":dt,
-        "daily_targets":tgt,"nutrient_status":ns,"score":max(0,sc)},ensure_ascii=False,indent=2))
+        "daily_targets":tgt,"nutrient_status":ns,"micro_nutrients":micros,"score":max(0,sc)},ensure_ascii=False,indent=2))
 
 def cmd_query_remaining(a):
     dd=ensure_data_dir(a.data_dir)
     log=load_json(dd/"daily_log.json",{"records":[]})
     prof=load_json(dd/"user_profile.json"); tgt=prof.get("daily_targets",{})
     today=a.date or date.today().isoformat()
-    dt={k:0 for k in ["calories","protein","carbs","fat","fiber","sodium"]}
+    all_keys = ["calories","protein","carbs","fat","fiber","sodium","potassium","calcium","iron","magnesium","zinc","vitamin_c"]
+    dt={k:0 for k in all_keys}
     for r in log["records"]:
         if r["date"]==today:
             for k in dt: dt[k]+=r["totals"].get(k,0)
     rem={k:round(max(0,tgt.get(k,0)-v),1) for k,v in dt.items()}
+    # 过滤掉不需要展示的剩余量（如果是微量元素且没目标）
+    display_rem = {k:v for k,v in rem.items() if tgt.get(k,0) > 0}
     print(json.dumps({"status":"success","date":today,"consumed":{k:round(v,1) for k,v in dt.items()},
         "remaining":rem,"targets":tgt},ensure_ascii=False,indent=2))
 
