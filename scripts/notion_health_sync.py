@@ -1037,6 +1037,16 @@ def build_ai_advice_section(report: dict) -> list:
     blocks = []
 
     advice_lines = []
+    advice_error = None
+    llm_meta = report.get("llm_advice_meta")
+    if isinstance(llm_meta, dict):
+        err = llm_meta.get("error")
+        if isinstance(err, str) and err.strip():
+            advice_error = err.strip()
+    if not advice_error:
+        err = report.get("llm_advice_error")
+        if isinstance(err, str) and err.strip():
+            advice_error = err.strip()
 
     llm_advice = report.get("llm_generated_advice")
     if isinstance(llm_advice, list):
@@ -1102,11 +1112,17 @@ def build_ai_advice_section(report: dict) -> list:
             short = adv.split(":", 1)[-1].split("：", 1)[-1].strip()[:50]
             inner_blocks.append(_todo(short, checked=False))
     else:
-        inner_blocks.append(_callout(
-            "数据不足，暂无法生成个性化建议。请补充饮食记录和健康数据以获得精准 AI 指导。",
-            icon_emoji="🤖", color="yellow_background",
-        ))
-        inner_blocks.append(_quote("💡 记录越完整，AI 建议越精准！试试拍一张午餐照片开始记录吧。", color="blue_background"))
+        if advice_error:
+            inner_blocks.append(_callout(
+                f"未生成 AI 建议：{advice_error}\n\n请先在本地配置大模型（set-llm-advice + 环境变量），再重新生成综合健康报告。",
+                icon_emoji="🤖", color="yellow_background",
+            ))
+        else:
+            inner_blocks.append(_callout(
+                "当前报告未启用自动建议，或未提供建议文件，所以没有可展示的 AI 建议。",
+                icon_emoji="🤖", color="yellow_background",
+            ))
+        inner_blocks.append(_quote("💡 记录越完整，AI 建议越精准！", color="blue_background"))
 
     blocks.extend(_heading_toggle(1, "💡 AI 健康建议 & 行动计划", inner_blocks, color="pink_background"))
     return blocks

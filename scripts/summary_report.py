@@ -408,6 +408,46 @@ def build_llm_objective_payload(report_type, start, end, target_dates, targets, 
     avg_intake = diet_summary.get("avg_intake_kcal", 0)
     personal_context = build_personal_context(profile, log, metrics, end)
 
+    daily_sequence = []
+    for d in target_dates:
+        item = {
+            "date": d,
+            "steps": activity_metrics.get(d, {}).get("total_steps", 0),
+            "sleep_hours": sleep_metrics.get(d, {}).get("total_sleep_hours", 0),
+            "tdee_kcal": energy_metrics.get(d, {}).get("tdee_kcal", 0),
+        }
+        # 从 diet_summary 中尝试获取每日摄入（如果 diet_summary 包含每日详情）
+        # 目前 diet_summary 主要是汇总数据，需要从 log 重新提取每日摄入
+        # 为了避免重复读取，这里使用已有的 log 数据
+        # 注意：这里假设 log 已经在外部加载并传入
+        daily_log_totals = {}
+        for r in log.get("records", []):
+            if r.get("date") == d:
+                t = r.get("totals", {})
+                daily_log_totals = {
+                    "calories": t.get("calories", 0),
+                    "protein": t.get("protein", 0),
+                    "carbs": t.get("carbs", 0),
+                    "fat": t.get("fat", 0),
+                }
+                break
+        item.update(daily_log_totals)
+        daily_sequence.append(item)
+
+    nutrient_diversity = diet_summary.get("nutrition_diversity", {})
+    missing_dims = nutrient_diversity.get("missing_nutrient_dimensions", [])
+    covered_dims = nutrient_diversity.get("covered_nutrient_dimensions", [])
+    period_nutrient_totals = nutrient_diversity.get("period_nutrient_totals", {})
+
+    # 简单计算缺口摘要（仅供参考，基于缺失维度）
+    # 这里我们直接把缺失维度列表作为重点
+    nutrient_gap_summary = {
+        "missing_dimensions_count": len(missing_dims),
+        "missing_dimensions_list": missing_dims,
+        "covered_dimensions_count": len(covered_dims),
+        "period_totals_preview": {k: v for k, v in list(period_nutrient_totals.items())[:10]} # 只展示前10个避免过长
+    }
+
     return {
         "report_period": {
             "type": report_type,
@@ -415,6 +455,8 @@ def build_llm_objective_payload(report_type, start, end, target_dates, targets, 
             "end": end.isoformat(),
             "days": len(target_dates),
         },
+        "daily_sequence": daily_sequence,
+        "nutrient_gap_summary": nutrient_gap_summary,
         "diet": {
             "days_with_records": diet_summary.get("days_with_data", 0),
             "avg_daily": diet_summary.get("avg", {}),
@@ -1747,17 +1789,11 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
 
     llm_advice_lines = load_llm_advice(llm_advice_file)
     llm_advice_meta = {"source": "file", "path": llm_advice_file, "generated_count": len(llm_advice_lines)} if llm_advice_file else None
+    llm_advice_error = None
     if auto_llm_advice and not llm_advice_lines:
-        llm_advice_lines, llm_advice_meta, llm_error = generate_llm_advice(data_dir, report_type, objective_payload)
-        if llm_error:
-            result = {
-                "status": "error",
-                "message": "综合健康报告未生成：自动大模型建议生成失败。",
-                "reason": llm_error,
-                "llm_advice_meta": llm_advice_meta,
-            }
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return result
+        llm_advice_lines, llm_advice_meta, llm_advice_error = generate_llm_advice(data_dir, report_type, objective_payload)
+        if llm_advice_error and isinstance(llm_advice_meta, dict):
+            llm_advice_meta["error"] = llm_advice_error
     if llm_advice_meta is None:
         llm_advice_meta = {"source": "none", "generated_count": len(llm_advice_lines)}
 
@@ -1767,7 +1803,15 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
         for idx, advice in enumerate(llm_advice_lines, 1):
             lines.append(f"- 建议 {idx}：{advice}")
     else:
-        lines.append("- 本部分由大模型基于下方客观数据生成，脚本不做规则化建议。")
+        if llm_advice_error:
+            lines.append(f"- 建议生成未启用或未配置完成：{llm_advice_error}")
+            lines.append("- 配置方法：")
+            lines.append(f"  - 运行：python scripts/summary_report.py set-llm-advice --model <模型名> --data-dir {dd}")
+            lines.append("  - 设置环境变量：OPENAI_API_KEY（或你配置的 api-key-env 对应名称）")
+            lines.append(f"  - 再运行：python scripts/summary_report.py generate-merged --type {report_type} --data-dir {dd}")
+        else:
+            lines.append("- 本部分默认由大模型基于下方客观数据生成；当前未启用自动建议或未提供建议文件。")
+            lines.append("- 如需自动生成：运行 generate-merged 时启用自动建议，或传入 llm-advice-file。")
 
     cache_fingerprint = ext_data.get("cache_meta", {}).get("cache_fingerprint")
     if not cache_fingerprint:
@@ -1801,6 +1845,7 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
         },
         "llm_generated_advice": llm_advice_lines,
         "llm_advice_meta": llm_advice_meta,
+        "llm_advice_error": llm_advice_error,
         "llm_nutrient_diversity_meta": nutrient_diversity_meta,
         "llm_nutrient_diversity_error": nutrient_diversity_error,
         "llm_nutrient_diversity": diet_summary.get("nutrition_diversity"),
@@ -1849,6 +1894,8 @@ def main():
                     help="由大模型生成建议后的 JSON 文件路径（数组）")
     p3.add_argument("--auto-llm-advice", action="store_true",
                     help="自动调用已配置大模型生成建议并写入报告")
+    p3.add_argument("--no-auto-llm-advice", action="store_true",
+                    help="禁用自动调用大模型生成建议（默认启用）")
 
     p4 = sp.add_parser("set-llm-advice")
     p4.add_argument("--model", required=True)
@@ -1904,13 +1951,18 @@ def main():
             push_notion=push_notion,
         )
     elif args.command == "generate-merged":
+        auto_llm_advice = True
+        if getattr(args, "no_auto_llm_advice", False):
+            auto_llm_advice = False
+        if getattr(args, "auto_llm_advice", False):
+            auto_llm_advice = True
         generate_merged_report(
             args.data_dir,
             args.type,
             args.end_date,
             args.strict_real_data,
             args.llm_advice_file,
-            args.auto_llm_advice,
+            auto_llm_advice,
         )
     elif args.command == "set-llm-advice":
         set_llm_advice_config(
