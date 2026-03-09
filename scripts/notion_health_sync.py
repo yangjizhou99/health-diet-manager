@@ -467,6 +467,7 @@ def build_diet_section(llm_input: dict) -> list:
     target = diet.get("target_daily", {})
     score = diet.get("diet_balance_score")
     intake_kcal = diet.get("avg_intake_kcal", 0)
+    diversity = diet.get("nutrition_diversity", {})
 
     inner_blocks = []
 
@@ -481,6 +482,19 @@ def build_diet_section(llm_input: dict) -> list:
             _rich_text(f"日均摄入 · 有效记录 {days_with} 天", italic=True, color="gray"),
         ], icon_emoji="🔥", color="orange_background")]
         inner_blocks.append(_column_list([score_col, kcal_col]))
+    if diversity.get("score") is not None:
+        avg_cov = diversity.get("avg_nutrient_dimension_coverage", diversity.get("avg_category_coverage", 0))
+        missing_dims = diversity.get("missing_nutrient_dimensions", diversity.get("missing_categories", []))
+        inner_blocks.append(_quote(
+            f"🥗 营养素多样性 {int(diversity.get('score', 0))}/100 · {diversity.get('level', '未评级')} · "
+            f"日均 {diversity.get('avg_unique_foods_per_day', 0)} 种食物 · 日均覆盖营养素维度 {avg_cov}",
+            color="green_background",
+        ))
+        if missing_dims:
+            inner_blocks.append(_paragraph([
+                _rich_text("建议补充营养素维度：", bold=True, color="orange"),
+                _rich_text("、".join(missing_dims)),
+            ]))
 
     # 营养素达成率表 + 进度条
     nutrient_headers = ["营养素", "日均摄入", "目标推荐", "进度", "状态"]
@@ -1181,6 +1195,7 @@ def build_daily_diet(llm_input: dict) -> list:
     target = diet.get("target_daily", {})
     intake = diet.get("avg_intake_kcal", 0)
     score = diet.get("diet_balance_score")
+    diversity = diet.get("nutrition_diversity", {})
 
     # 热量 + 评分 卡片
     if score is not None:
@@ -1193,6 +1208,19 @@ def build_daily_diet(llm_input: dict) -> list:
             _rich_text("饮食均衡评分", italic=True, color="gray"),
         ], icon_emoji="📊", color="green_background")]
         inner.append(_column_list([col1, col2]))
+    if diversity.get("score") is not None:
+        avg_cov = diversity.get("avg_nutrient_dimension_coverage", diversity.get("avg_category_coverage", 0))
+        missing_dims = diversity.get("missing_nutrient_dimensions", diversity.get("missing_categories", []))
+        inner.append(_quote(
+            f"🥗 今日营养素多样性 {int(diversity.get('score', 0))}/100 · {diversity.get('level', '未评级')} · "
+            f"{diversity.get('avg_unique_foods_per_day', 0)} 种食物 · 覆盖营养素维度 {avg_cov}",
+            color="green_background",
+        ))
+        if missing_dims:
+            inner.append(_paragraph([
+                _rich_text("下一餐可补充营养素维度：", bold=True, color="orange"),
+                _rich_text("、".join(missing_dims)),
+            ]))
 
     # 营养素进度 (紧凑列表)
     nutrient_map = [

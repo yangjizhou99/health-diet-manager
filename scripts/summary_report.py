@@ -15,6 +15,7 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 
 LLM_ADVICE_CONFIG_FILE = "llm_advice_config.json"
+NUTRIENT_DIVERSITY_DIR = "nutrient_diversity"
 
 def load_json(fp, default=None):
     if default is None: default = {}
@@ -98,6 +99,7 @@ def build_daily_nutrition(log, start, end):
             "sodium": 0,
             "meals": 0,
             "foods": [],
+            "food_items": [],
         }
         cur += timedelta(days=1)
 
@@ -108,8 +110,42 @@ def build_daily_nutrition(log, start, end):
             for k in ["calories", "protein", "carbs", "fat", "fiber", "sodium"]:
                 daily[d][k] += totals.get(k, 0)
             daily[d]["meals"] += 1
-            daily[d]["foods"].extend([f.get("name", "未知食物") for f in r.get("foods", [])])
+            for f in r.get("foods", []):
+                name = f.get("name", "未知食物")
+                daily[d]["foods"].append(name)
+                daily[d]["food_items"].append({
+                    "name": name,
+                    "amount_g": _extract_food_grams(f),
+                    "known_nutrients": _extract_food_nutrients(f),
+                })
     return daily
+
+def _extract_food_grams(food):
+    if not isinstance(food, dict):
+        return None
+    for key in ["amount_g", "grams", "weight_g", "weight", "portion_g", "serving_g"]:
+        value = food.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return round(float(value), 1)
+    return None
+
+def _extract_food_nutrients(food):
+    if not isinstance(food, dict):
+        return {}
+    nutrient_keys = [
+        "calories", "protein", "carbs", "fat", "fiber", "sodium",
+        "sugar", "cholesterol", "potassium", "calcium", "iron",
+        "magnesium", "zinc", "vitamin_a", "vitamin_c", "vitamin_d",
+        "vitamin_e", "vitamin_k", "vitamin_b1", "vitamin_b2",
+        "vitamin_b3", "vitamin_b6", "vitamin_b9", "vitamin_b12",
+        "omega3", "omega6",
+    ]
+    out = {}
+    for key in nutrient_keys:
+        value = food.get(key)
+        if isinstance(value, (int, float)):
+            out[key] = round(float(value), 3)
+    return out
 
 def summarize_diet_period(daily, targets):
     days_with_data = [d for d, v in daily.items() if v["meals"] > 0]
@@ -121,6 +157,17 @@ def summarize_diet_period(daily, targets):
             "energy_balance": {},
             "top_foods": [],
             "score": None,
+            "nutrition_diversity": {
+                "score": None,
+                "level": "暂无数据",
+                "avg_unique_foods_per_day": 0,
+                "avg_nutrient_dimension_coverage": 0,
+                "nutrient_dimension_coverage_rate_pct": 0,
+                "covered_nutrient_dimensions": [],
+                "missing_nutrient_dimensions": [],
+                "daily_details": [],
+                "source": "llm_nutrient_model",
+            },
         }
 
     avgs = {
@@ -162,6 +209,17 @@ def summarize_diet_period(daily, targets):
         "total_intake_kcal": total_in,
         "top_foods": top_foods,
         "score": round(sum(scores) / len(scores)),
+        "nutrition_diversity": {
+            "score": None,
+            "level": "待评估",
+            "avg_unique_foods_per_day": round(sum(len(set(daily[d]["foods"])) for d in days_with_data) / n, 1) if n else 0,
+            "avg_nutrient_dimension_coverage": 0,
+            "nutrient_dimension_coverage_rate_pct": 0,
+            "covered_nutrient_dimensions": [],
+            "missing_nutrient_dimensions": [],
+            "daily_details": [],
+            "source": "llm_nutrient_model",
+        },
     }
 
 def compute_avg_tdee(metrics, target_dates):
@@ -363,6 +421,7 @@ def build_llm_objective_payload(report_type, start, end, target_dates, targets, 
             "avg_intake_kcal": avg_intake,
             "target_daily": targets,
             "diet_balance_score": diet_summary.get("score"),
+            "nutrition_diversity": diet_summary.get("nutrition_diversity", {}),
             "top_foods": [{"name": name, "count": cnt} for name, cnt in diet_summary.get("top_foods", [])],
         },
         "activity": {
@@ -568,6 +627,283 @@ def generate_llm_advice(data_dir, report_type, objective_payload):
     if not lines:
         return [], meta, "大模型返回为空或格式不符合要求"
     return lines, meta, None
+
+def _extract_json_object_like(text):
+    if not text:
+        return {}
+    raw = str(text).strip()
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = raw[start:end+1]
+        try:
+            obj = json.loads(candidate)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+def _post_chat_completion(cfg, user_payload, fallback_system_prompt):
+    model = str(cfg.get("model", "")).strip()
+    if not model:
+        return "", {"enabled": True}, "未配置模型名称，请先执行 set-llm-advice"
+    api_key_env = str(cfg.get("api_key_env", "OPENAI_API_KEY")).strip() or "OPENAI_API_KEY"
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        return "", {"enabled": True, "api_key_env": api_key_env}, f"环境变量 {api_key_env} 未设置"
+    try:
+        import requests
+    except Exception:
+        return "", {"enabled": True}, "缺少 requests 依赖"
+    base_url = str(cfg.get("base_url", "https://api.openai.com/v1/chat/completions")).strip()
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    body = {
+        "model": model,
+        "temperature": float(cfg.get("temperature", 0.3)),
+        "max_tokens": int(cfg.get("max_tokens", 1600)),
+        "messages": [
+            {"role": "system", "content": cfg.get("system_prompt") or fallback_system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ],
+    }
+    timeout_seconds = int(cfg.get("timeout_seconds", 90))
+    try:
+        resp = requests.post(base_url, headers=headers, json=body, timeout=timeout_seconds)
+    except Exception as e:
+        return "", {"base_url": base_url, "model": model, "api_key_env": api_key_env}, f"调用大模型失败: {e}"
+    if resp.status_code >= 400:
+        detail = resp.text[:500] if resp.text else ""
+        return "", {"base_url": base_url, "model": model, "api_key_env": api_key_env, "status_code": resp.status_code}, f"大模型接口返回错误: {resp.status_code} {detail}"
+    try:
+        resp_json = resp.json()
+    except Exception:
+        return "", {"base_url": base_url, "model": model, "api_key_env": api_key_env}, "大模型响应不是 JSON"
+    content = ""
+    if isinstance(resp_json, dict):
+        choices = resp_json.get("choices", [])
+        if choices and isinstance(choices, list):
+            msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+            content = msg.get("content", "")
+        if not content and isinstance(resp_json.get("output_text"), str):
+            content = resp_json.get("output_text", "")
+    return content, {"base_url": base_url, "model": model, "api_key_env": api_key_env}, None
+
+def _level_from_score(score):
+    if score is None:
+        return "暂无数据"
+    if score >= 85:
+        return "优秀"
+    if score >= 70:
+        return "良好"
+    if score >= 55:
+        return "一般"
+    return "偏低"
+
+def _save_nutrient_diversity_result(data_dir, report_type, start, end, payload):
+    dd = Path(data_dir) / NUTRIENT_DIVERSITY_DIR
+    dd.mkdir(parents=True, exist_ok=True)
+    base_name = f"nutrient_diversity_{report_type}_{start.isoformat()}_to_{end.isoformat()}"
+    out = dd / f"{base_name}.json"
+    if out.exists():
+        out = dd / f"{base_name}_{datetime.now().strftime('%H%M%S')}.json"
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return str(out)
+
+def generate_llm_nutrient_diversity(data_dir, report_type, start, end, target_dates, daily):
+    cfg = load_llm_advice_config(data_dir)
+    def _save_failure(reason, meta, daily_foods_payload=None):
+        failure_payload = {
+            "generated_at": datetime.now().isoformat(),
+            "report_type": report_type,
+            "period": {"start": start.isoformat(), "end": end.isoformat(), "days": len(target_dates)},
+            "status": "failed",
+            "reason": reason,
+            "llm_meta": meta,
+            "input_daily_foods": daily_foods_payload or {},
+        }
+        save_path = _save_nutrient_diversity_result(data_dir, report_type, start, end, failure_payload)
+        meta["saved_result_path"] = save_path
+        return save_path
+    if not cfg.get("enabled", True):
+        meta = {"source": "llm_nutrient_model", "enabled": False}
+        _save_failure("大模型配置已禁用", meta)
+        return None, meta, "大模型配置已禁用"
+    daily_foods = {}
+    daily_food_items = {}
+    for d in target_dates:
+        items = daily.get(d, {}).get("food_items", [])
+        merged = {}
+        for item in items:
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            row = merged.setdefault(name, {"name": name, "amount_g": 0.0, "amount_g_known": False, "known_nutrients": {}})
+            grams = item.get("amount_g")
+            if isinstance(grams, (int, float)) and grams > 0:
+                row["amount_g"] += float(grams)
+                row["amount_g_known"] = True
+            for nk, nv in (item.get("known_nutrients", {}) or {}).items():
+                if isinstance(nv, (int, float)):
+                    row["known_nutrients"][nk] = round(row["known_nutrients"].get(nk, 0.0) + float(nv), 3)
+        day_list = []
+        for _, row in sorted(merged.items(), key=lambda kv: kv[0]):
+            row["amount_g"] = round(row["amount_g"], 1) if row["amount_g_known"] else None
+            row.pop("amount_g_known", None)
+            day_list.append(row)
+        if day_list:
+            daily_food_items[d] = day_list
+            daily_foods[d] = [x["name"] for x in day_list]
+    if not daily_foods:
+        return {
+            "score": None,
+            "level": "暂无数据",
+            "avg_unique_foods_per_day": 0,
+            "avg_nutrient_dimension_coverage": 0,
+            "nutrient_dimension_coverage_rate_pct": 0,
+            "covered_nutrient_dimensions": [],
+            "missing_nutrient_dimensions": [],
+            "daily_details": [],
+            "nutrient_profile_by_food": [],
+            "source": "llm_nutrient_model",
+            "period_nutrient_dimensions": [],
+            "period_nutrient_totals": {},
+            "key_findings": [],
+        }, {"source": "llm_nutrient_model", "enabled": True, "generated_count": 0}, None
+    unique_foods_period = sorted(set([name for foods in daily_foods.values() for name in foods]))
+    user_payload = {
+        "task": "营养素多样性评估",
+        "report_type": report_type,
+        "period": {"start": start.isoformat(), "end": end.isoformat(), "days": len(target_dates)},
+        "rules": [
+            "你必须基于人体营养素需求视角进行分类，不要使用食物类别法。",
+            "必须结合食物重量（克）来计算各营养素含量；若缺少重量可根据常见份量估算并标注 estimated=true。",
+            "营养素尽可能全面，至少包含宏量营养素、膳食纤维、钠、钾、钙、铁、镁、锌、维生素A/C/D/E/K、B族、胆固醇、糖、Omega-3/Omega-6。",
+            "每日同名食物只计一次去重。",
+            "返回 JSON 对象，不要返回 Markdown。"
+        ],
+        "daily_foods_deduplicated": daily_foods,
+        "daily_foods_with_weight_and_known_nutrients": daily_food_items,
+        "all_foods_deduplicated": unique_foods_period,
+        "output_schema": {
+            "nutrient_dimensions": [{"id": "string", "label": "string", "unit": "string"}],
+            "food_nutrient_amounts": [{"name": "string", "amount_g": 0, "estimated": False, "nutrient_amounts": {"nutrient_id": 0.0}}],
+            "daily_nutrient_totals": [{"date": "YYYY-MM-DD", "nutrient_amounts": {"nutrient_id": 0.0}, "covered_nutrient_dimension_ids": ["string"], "diversity_score": 0}],
+            "period_summary": {
+                "diversity_score": 0,
+                "covered_nutrient_dimension_ids": ["string"],
+                "missing_nutrient_dimension_ids": ["string"],
+                "period_nutrient_totals": {"nutrient_id": 0.0},
+                "key_findings": ["string"]
+            }
+        },
+    }
+    content, meta, llm_error = _post_chat_completion(
+        cfg,
+        user_payload,
+        "你是营养学分析模型。你的任务是以营养素为维度评估饮食多样性，并严格输出 JSON 对象。"
+    )
+    meta = {"source": "llm_nutrient_model", **meta}
+    if llm_error:
+        _save_failure(llm_error, meta, daily_foods)
+        return None, meta, llm_error
+    parsed = _extract_json_object_like(content)
+    if not parsed:
+        error = "大模型返回不是有效 JSON 对象"
+        _save_failure(error, meta, daily_foods)
+        return None, meta, error
+    nutrient_dims = parsed.get("nutrient_dimensions", [])
+    foods_profile = parsed.get("food_nutrient_amounts", parsed.get("food_profiles", []))
+    daily_scores = parsed.get("daily_nutrient_totals", parsed.get("daily_scores", []))
+    period_summary = parsed.get("period_summary", {})
+    if not isinstance(nutrient_dims, list):
+        nutrient_dims = []
+    if not isinstance(foods_profile, list):
+        foods_profile = []
+    if not isinstance(daily_scores, list):
+        daily_scores = []
+    if not isinstance(period_summary, dict):
+        period_summary = {}
+    dim_label_map = {}
+    dim_ids = []
+    for item in nutrient_dims:
+        if isinstance(item, dict):
+            did = str(item.get("id", "")).strip()
+            lbl = str(item.get("label", "")).strip() or did
+            unit = str(item.get("unit", "")).strip()
+            if did:
+                dim_ids.append(did)
+                dim_label_map[did] = f"{lbl}({unit})" if unit else lbl
+    day_details = []
+    score_list = []
+    unique_counts = []
+    coverage_counts = []
+    covered_period = set()
+    for item in daily_scores:
+        if not isinstance(item, dict):
+            continue
+        ds = str(item.get("date", "")).strip()
+        unique_food_count = int(item.get("unique_food_count", 0) or 0)
+        covered_ids = [str(x).strip() for x in item.get("covered_nutrient_dimension_ids", []) if str(x).strip()]
+        covered_labels = [dim_label_map.get(i, i) for i in covered_ids]
+        score = item.get("diversity_score")
+        score = int(score) if isinstance(score, (int, float)) else None
+        if score is not None:
+            score_list.append(score)
+        unique_counts.append(unique_food_count)
+        coverage_counts.append(len(covered_ids))
+        covered_period.update(covered_ids)
+        day_details.append({
+            "date": ds,
+            "score": score,
+            "unique_food_count": unique_food_count,
+            "nutrient_dimension_coverage": len(covered_ids),
+            "covered_nutrient_dimensions": covered_labels,
+        })
+    period_score = period_summary.get("diversity_score")
+    period_score = int(period_score) if isinstance(period_score, (int, float)) else (round(sum(score_list) / len(score_list)) if score_list else None)
+    covered_ids_period = [str(x).strip() for x in period_summary.get("covered_nutrient_dimension_ids", []) if str(x).strip()]
+    if not covered_ids_period:
+        covered_ids_period = sorted(list(covered_period))
+    missing_ids_period = [str(x).strip() for x in period_summary.get("missing_nutrient_dimension_ids", []) if str(x).strip()]
+    if not missing_ids_period and dim_ids:
+        missing_ids_period = [d for d in dim_ids if d not in covered_ids_period]
+    result = {
+        "score": period_score,
+        "level": _level_from_score(period_score),
+        "avg_unique_foods_per_day": round(sum(unique_counts) / len(unique_counts), 1) if unique_counts else 0,
+        "avg_nutrient_dimension_coverage": round(sum(coverage_counts) / len(coverage_counts), 1) if coverage_counts else 0,
+        "nutrient_dimension_coverage_rate_pct": round(len(set(covered_ids_period)) / len(dim_ids) * 100) if dim_ids else 0,
+        "covered_nutrient_dimensions": [dim_label_map.get(i, i) for i in covered_ids_period],
+        "missing_nutrient_dimensions": [dim_label_map.get(i, i) for i in missing_ids_period],
+        "daily_details": day_details,
+        "nutrient_profile_by_food": foods_profile,
+        "period_nutrient_dimensions": nutrient_dims,
+        "period_nutrient_totals": period_summary.get("period_nutrient_totals", {}),
+        "key_findings": [str(x).strip() for x in period_summary.get("key_findings", []) if str(x).strip()],
+        "source": "llm_nutrient_model",
+        "dedup_rule": "同日同名食物计1次，跨天保留用于趋势分析",
+    }
+    raw_payload = {
+        "generated_at": datetime.now().isoformat(),
+        "report_type": report_type,
+        "period": {"start": start.isoformat(), "end": end.isoformat(), "days": len(target_dates)},
+        "input_daily_foods": daily_foods,
+        "llm_meta": meta,
+        "llm_raw_content": content,
+        "llm_parsed": parsed,
+        "normalized_result": result,
+    }
+    save_path = _save_nutrient_diversity_result(data_dir, report_type, start, end, raw_payload)
+    result["saved_result_path"] = save_path
+    meta["generated_count"] = len(day_details)
+    meta["saved_result_path"] = save_path
+    return result, meta, None
 
 def save_report_files(data_dir, report_type, start, end, report_markdown, payload):
     dd = Path(data_dir)
@@ -1134,6 +1470,33 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
     body_metrics = metrics.get("body_composition", {})
     valid_body_days = [d for d in target_dates if d in body_metrics]
 
+    nutrient_diversity, nutrient_diversity_meta, nutrient_diversity_error = generate_llm_nutrient_diversity(
+        data_dir=data_dir,
+        report_type=report_type,
+        start=start,
+        end=end,
+        target_dates=target_dates,
+        daily=daily,
+    )
+    if nutrient_diversity is not None:
+        diet_summary["nutrition_diversity"] = nutrient_diversity
+    else:
+        diet_summary["nutrition_diversity"] = {
+            "score": None,
+            "level": "未生成",
+            "avg_unique_foods_per_day": diet_summary.get("nutrition_diversity", {}).get("avg_unique_foods_per_day", 0),
+            "avg_nutrient_dimension_coverage": 0,
+            "nutrient_dimension_coverage_rate_pct": 0,
+            "covered_nutrient_dimensions": [],
+            "missing_nutrient_dimensions": [],
+            "daily_details": [],
+            "nutrient_profile_by_food": [],
+            "period_nutrient_dimensions": [],
+            "period_nutrient_totals": {},
+            "key_findings": [],
+            "source": "llm_nutrient_model",
+        }
+
     objective_payload = build_llm_objective_payload(
         report_type=report_type,
         start=start,
@@ -1203,6 +1566,39 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
             lines.append(f"| {label} | {actual} | {target} | {pct}% | {_status_from_pct(pct)} |")
         lines.append("")
         lines.append(f"- 饮食均衡评分: {diet_summary.get('score', 0)}/100")
+        diversity = diet_summary.get("nutrition_diversity", {})
+        if diversity.get("score") is not None:
+            lines.append(f"- 营养素多样性评分: {diversity.get('score')}/100 ({diversity.get('level', '未知')})")
+            lines.append(f"- 日均食物种类数: {diversity.get('avg_unique_foods_per_day', 0)}")
+            lines.append(f"- 日均覆盖营养素维度: {diversity.get('avg_nutrient_dimension_coverage', 0)}")
+            lines.append(f"- 周期营养素覆盖率: {diversity.get('nutrient_dimension_coverage_rate_pct', 0)}%")
+            if diversity.get("covered_nutrient_dimensions"):
+                lines.append("- 已覆盖营养素维度: " + "、".join(diversity.get("covered_nutrient_dimensions", [])))
+            if diversity.get("missing_nutrient_dimensions"):
+                lines.append("- 建议补充营养素维度: " + "、".join(diversity.get("missing_nutrient_dimensions", [])))
+            if diversity.get("key_findings"):
+                lines.append("- 大模型营养素观察: " + "；".join(diversity.get("key_findings", [])[:3]))
+            period_totals = diversity.get("period_nutrient_totals", {})
+            dim_map = {}
+            for d_item in diversity.get("period_nutrient_dimensions", []):
+                if isinstance(d_item, dict):
+                    d_id = str(d_item.get("id", "")).strip()
+                    d_label = str(d_item.get("label", "")).strip() or d_id
+                    d_unit = str(d_item.get("unit", "")).strip()
+                    if d_id:
+                        dim_map[d_id] = f"{d_label}({d_unit})" if d_unit else d_label
+            if isinstance(period_totals, dict) and period_totals:
+                valid_totals = []
+                for k, v in period_totals.items():
+                    if isinstance(v, (int, float)):
+                        valid_totals.append((k, float(v)))
+                valid_totals = sorted(valid_totals, key=lambda x: abs(x[1]), reverse=True)
+                if valid_totals:
+                    lines.append("- 周期营养素总量(Top8): " + "；".join(
+                        f"{dim_map.get(k, k)}={round(v, 2)}" for k, v in valid_totals[:8]
+                    ))
+        elif nutrient_diversity_error:
+            lines.append(f"- 营养素多样性结果: 未生成（{nutrient_diversity_error}）")
         lines.append(f"- 总摄入热量: {diet_summary.get('total_intake_kcal', 0)} kcal")
         if diet_summary.get("top_foods"):
             lines.append("- 高频食物: " + "、".join(f"{name}({cnt}次)" for name, cnt in diet_summary["top_foods"][:8]))
@@ -1323,6 +1719,11 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
         protein_target = targets.get("protein", 0)
         if protein_target and _pct(avg.get("protein", 0), protein_target) >= 90:
             findings.append(f"- 蛋白质完成度较高: {avg.get('protein', 0)}g / {protein_target}g")
+        diversity_score = diet_summary.get("nutrition_diversity", {}).get("score")
+        if diversity_score is not None and diversity_score < 60:
+            findings.append(f"- 营养素多样性偏低: 评分 {diversity_score}/100，建议补齐缺口营养素维度")
+        if diversity_score is not None and diversity_score >= 85:
+            findings.append(f"- 营养素多样性表现优秀: 评分 {diversity_score}/100")
     if total_steps_list:
         if max(total_steps_list) >= 8000:
             findings.append(f"- 活动量尚可: 最高单日步数 {max(total_steps_list)}")
@@ -1400,6 +1801,9 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
         },
         "llm_generated_advice": llm_advice_lines,
         "llm_advice_meta": llm_advice_meta,
+        "llm_nutrient_diversity_meta": nutrient_diversity_meta,
+        "llm_nutrient_diversity_error": nutrient_diversity_error,
+        "llm_nutrient_diversity": diet_summary.get("nutrition_diversity"),
         "llm_objective_input": objective_payload,
         "report_markdown": report,
     }
