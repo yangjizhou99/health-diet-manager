@@ -1649,6 +1649,82 @@ def generate_merged_report(data_dir, report_type, end_date_str, strict_real_data
             if day_foods:
                 lines.append("- 当日食物明细: " + "、".join(day_foods))
 
+    # 新增：详细营养素分析章节
+    lines.append("")
+    lines.append("## 🔬 详细营养素分析")
+    diversity = diet_summary.get("nutrition_diversity", {})
+    if diversity.get("period_nutrient_totals"):
+        p_totals = diversity.get("period_nutrient_totals", {})
+        # 构建维度 ID -> Label 的映射
+        dim_map = {}
+        for d_item in diversity.get("period_nutrient_dimensions", []):
+            if isinstance(d_item, dict):
+                d_id = str(d_item.get("id", "")).strip()
+                d_label = str(d_item.get("label", "")).strip() or d_id
+                d_unit = str(d_item.get("unit", "")).strip()
+                if d_id:
+                    dim_map[d_id] = {"label": d_label, "unit": d_unit}
+        
+        # 分组展示：宏量、矿物质、维生素
+        groups = {
+            "宏量": ["protein", "carbs", "fat", "fiber", "sugar", "cholesterol", "omega3", "omega6"],
+            "矿物质": ["sodium", "potassium", "calcium", "magnesium", "iron", "zinc"],
+            "维生素": ["vitamin_a", "vitamin_c", "vitamin_d", "vitamin_e", "vitamin_k", 
+                     "vitamin_b1", "vitamin_b2", "vitamin_b3", "vitamin_b6", "vitamin_b12", "folate"]
+        }
+        
+        # 展平所有已知营养素
+        flat_totals = []
+        for k, v in p_totals.items():
+            info = dim_map.get(k, {"label": k, "unit": ""})
+            flat_totals.append({"key": k, "label": info["label"], "val": v, "unit": info["unit"]})
+        
+        if flat_totals:
+            # 按组输出
+            days_count = max(1, diet_summary.get("days_with_data", 1))
+            for group_name, keys in groups.items():
+                group_items = [x for x in flat_totals if x["key"] in keys or x["label"] in keys] # 简单匹配
+                # 如果没有匹配到预定义组，就把剩下的归类到“其他” (这里简化处理，只展示匹配到的重点)
+                if not group_items and group_name == "宏量": continue # 宏量通常有数据
+                
+                # 补充逻辑：如果 flat_totals 里有，但不在 keys 里，算“其他”
+                # 这里为了简单，先只展示 flat_totals 里的所有项，按是否在推荐列表里排序
+                pass 
+
+            # 直接列表展示所有非零营养素，按摄入量/重要性排序
+            lines.append(f"### 📊 周期总摄入 ({days_count}天累计)")
+            # 优先展示重点关注的
+            priority_keys = ["protein", "carbs", "fat", "fiber", "sodium", "calcium", "iron", "vitamin_c"]
+            
+            # 表格头
+            lines.append("| 营养素 | 总量 | 日均 | 单位 |")
+            lines.append("|---|---|---|---|")
+            
+            # 先输出优先级高的
+            shown_keys = set()
+            for pk in priority_keys:
+                # 模糊匹配
+                candidates = [x for x in flat_totals if pk in x["key"].lower() or pk in x["label"].lower()]
+                for item in candidates:
+                    if item["key"] in shown_keys: continue
+                    daily_avg = item["val"] / days_count
+                    lines.append(f"| {item['label']} | {round(item['val'], 1)} | {round(daily_avg, 1)} | {item['unit']} |")
+                    shown_keys.add(item["key"])
+            
+            # 输出剩下的，按名称排序
+            remaining = [x for x in flat_totals if x["key"] not in shown_keys]
+            remaining.sort(key=lambda x: x["key"])
+            for item in remaining:
+                if item["val"] > 0:
+                    daily_avg = item["val"] / days_count
+                    lines.append(f"| {item['label']} | {round(item['val'], 1)} | {round(daily_avg, 1)} | {item['unit']} |")
+
+    if diversity.get("missing_nutrient_dimensions"):
+        lines.append("")
+        lines.append("### ⚠️ 缺失/低摄入预警")
+        lines.append("以下营养素在记录中未检测到或含量极低，建议通过相关食物补充：")
+        lines.append("- " + "、".join(diversity.get("missing_nutrient_dimensions", [])))
+
     lines.append("")
     lines.append("## 活动与步数分析")
     if total_steps_list:

@@ -536,6 +536,53 @@ def build_diet_section(llm_input: dict) -> list:
             inner_blocks.append(_paragraph([_rich_text("📊 宏量营养素分布", bold=True, color="purple")]))
             inner_blocks.append(_code_block("\n".join(pie_lines), "mermaid"))
 
+    # 新增：详细营养素清单（折叠块）
+    if diversity.get("period_nutrient_totals"):
+        p_totals = diversity.get("period_nutrient_totals", {})
+        # 构建维度 ID -> Label 的映射
+        dim_map = {}
+        for d_item in diversity.get("period_nutrient_dimensions", []):
+            if isinstance(d_item, dict):
+                d_id = str(d_item.get("id", "")).strip()
+                d_label = str(d_item.get("label", "")).strip() or d_id
+                d_unit = str(d_item.get("unit", "")).strip()
+                if d_id:
+                    dim_map[d_id] = {"label": d_label, "unit": d_unit}
+        
+        flat_totals = []
+        for k, v in p_totals.items():
+            info = dim_map.get(k, {"label": k, "unit": ""})
+            flat_totals.append({"key": k, "label": info["label"], "val": v, "unit": info["unit"]})
+        
+        detail_headers = ["营养素", "日均摄入", "单位"]
+        detail_rows = []
+        
+        # 排序：优先展示重点关注的
+        priority_keys = ["calcium", "iron", "sodium", "potassium", "magnesium", "zinc", "vitamin_c", "vitamin_a", "vitamin_d", "vitamin_b12", "folate", "cholesterol", "sugar"]
+        
+        shown_keys = set()
+        days_count = max(1, diet.get("days_with_records", 1))
+        
+        # 1. 重点微量元素
+        for pk in priority_keys:
+            candidates = [x for x in flat_totals if pk in x["key"].lower()]
+            for item in candidates:
+                if item["key"] in shown_keys: continue
+                if item["val"] > 0:
+                    daily_avg = item["val"] / days_count
+                    detail_rows.append([item["label"], f"{daily_avg:.2f}", item["unit"]])
+                    shown_keys.add(item["key"])
+        
+        # 2. 其他有数据的项（排除已展示的）
+        remaining = [x for x in flat_totals if x["key"] not in shown_keys and x["val"] > 0]
+        remaining.sort(key=lambda x: x["key"])
+        for item in remaining:
+            daily_avg = item["val"] / days_count
+            detail_rows.append([item["label"], f"{daily_avg:.2f}", item["unit"]])
+            
+        if detail_rows:
+            inner_blocks.append(_heading_toggle(2, "🔬 详细营养素清单", [_table(detail_headers, detail_rows)]))
+
     # 高频食物
     top_foods = diet.get("top_foods", [])
     if top_foods:
